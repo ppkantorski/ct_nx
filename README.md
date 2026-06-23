@@ -1,6 +1,6 @@
 <div align=center>
 
-<img src="extras/banner.png" alt="Banner" width="30%">
+<img src="extras/banner.png" alt="Banner" width="40%">
 
 </div>
 <h1 align=center>Chrono Trigger — Nintendo Switch port</h1>
@@ -60,7 +60,6 @@ You're going to need devkitA64 and the following devkitPro packages:
 * fgsfds for [max_nx](https://github.com/fgsfdsfgs/max_nx), which this loader is
   based on
 * TheOfficialFloW for the original Vita ports that pioneered this technique
-* the cocos2d-x project
 
 ### Support
 
