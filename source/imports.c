@@ -58,6 +58,16 @@ static void __stack_chk_fail_fake(void) {
 
 FILE *stderr_fake = (FILE *)0x1337;
 
+static int pthread_ret_to_bionic(int ret) {
+  // Android libc++ compares pthread status codes against bionic errno values.
+  // devkit/newlib uses a different ETIMEDOUT number, which turns a normal
+  // condition_variable timeout into an uncaught std::system_error.
+  const int bionic_etimedout = 110;
+  if (ret == ETIMEDOUT)
+    return bionic_etimedout;
+  return ret;
+}
+
 // ---------------------------------------------------------------------------
 // pthread wrappers: bionic allocates the opaque types inline and zero-inits
 // them, so we lazily back them with heap-allocated newlib objects stashed
@@ -140,7 +150,7 @@ static int pthread_cond_wait_fake(pthread_cond_t **cnd, pthread_mutex_t **mtx) {
 static int pthread_cond_timedwait_fake(pthread_cond_t **cnd, pthread_mutex_t **mtx, const struct timespec *t) {
   if (ensure_cond(cnd) < 0) return -1;
   if (ensure_mutex(mtx) < 0) return -1;
-  return pthread_cond_timedwait(*cnd, *mtx, t);
+  return pthread_ret_to_bionic(pthread_cond_timedwait(*cnd, *mtx, t));
 }
 
 // bionic pthread_once_t is a zero-initialised int. A correct pthread_once must
