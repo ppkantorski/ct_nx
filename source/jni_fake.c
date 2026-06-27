@@ -378,13 +378,16 @@ static void *conversion_encoding(FakePriArray *in, const char *from, const char 
 
 static int create_text_bitmap(va_list va) {
   FakePriArray *text = va_arg(va, void *);      // 1: byte[] utf-8
-  void *font = va_arg(va, void *); (void)font;  // 2: String fontName
+  void *font = va_arg(va, void *);              // 2: String fontName
+  const char *font_name = obj_str(font);        // (logged under DEBUG_INSTR)
+  (void)font_name;
   int fontSize = va_arg(va, int);               // 3
   int r = va_arg(va, int);                      // 4 fill R
   int g = va_arg(va, int);                      // 5 fill G
   int b = va_arg(va, int);                      // 6 fill B
   int a = va_arg(va, int);                      // 7 fill A
-  int align = va_arg(va, int);                  // 8 alignment (low nibble = horiz)
+  int align = va_arg(va, int);                  // 8 alignment (low nibble = horiz,
+                                                //   high nibble = vert)
   int width = va_arg(va, int);                  // 9 constraint width (0 = auto)
   int height = va_arg(va, int);                 // 10 constraint height (0 = auto)
   // 11..23 shadow/stroke/wrap/overflow; jboolean->int, jfloat->double in varargs
@@ -411,9 +414,24 @@ static int create_text_bitmap(va_list va) {
   memcpy(str, text->data, text->len);
   str[text->len] = 0;
 
+#if DEBUG_INSTR
+  // log how the engine lays out this text so we can see the input field's real
+  // alignment/box (grep the entered name in textdbg.log).
+  {
+    FILE *tl = fopen("textdbg.log", "a");
+    if (tl) {
+      fprintf(tl, "text='%s' font='%s' size=%d alignH=%d alignV=%d boxW=%d boxH=%d wrap=%d\n",
+              str, font_name ? font_name : "", fontSize,
+              align & 0x0F, (align >> 4) & 0x0F, width, height, wrap);
+      fclose(tl);
+    }
+  }
+#endif
+
   int w = 0, h = 0;
   unsigned char *rgba = gfx_render_text_rgba(str, fontSize, r, g, b, a,
-                                             align & 0x0F, width, height, wrap, &w, &h);
+                                             align & 0x0F, (align >> 4) & 0x0F,
+                                             width, height, wrap, &w, &h);
   free(str);
   if (!rgba) return 0;
 

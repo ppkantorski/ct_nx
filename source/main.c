@@ -92,7 +92,13 @@ static void check_data(void) {
 }
 
 static void set_screen_size(int w, int h) {
-  if (w <= 0 || h <= 0 || w > 1920 || h > 1080) {
+  // Explicit width/height are honoured up to 4K so you can render ABOVE the
+  // panel/HDMI output (e.g. 2489x1400 or 2560x1440) -- the compositor downscales
+  // it to the real output, i.e. supersampling for a sharper image at extra GPU
+  // cost. Keep a 16:9 ratio (2489x1400, 2560x1440, 3840x2160) to avoid stretch.
+  // -1/-1 (or anything out of range) auto-picks 1920x1080 docked / 1280x720
+  // handheld. Note: explicit values apply in BOTH modes, so set -1 for handheld.
+  if (w <= 0 || h <= 0 || w > 3840 || h > 2160) {
     if (appletGetOperationMode() == AppletOperationMode_Console) {
       screen_width = 1920; screen_height = 1080;
     } else {
@@ -125,24 +131,24 @@ static int egl_init(void) {
     EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
     EGL_NONE
   };
-  EGLConfig config;
+  EGLConfig egl_config;
   EGLint num = 0;
-  if (!eglChooseConfig(s_display, cfg_attr, &config, 1, &num) || num < 1) {
+  if (!eglChooseConfig(s_display, cfg_attr, &egl_config, 1, &num) || num < 1) {
     debugPrintf("egl: no config\n");
     return 0;
   }
 
   NWindow *win = nwindowGetDefault();
   nwindowSetDimensions(win, screen_width, screen_height);
-  s_surface = eglCreateWindowSurface(s_display, config, win, NULL);
+  s_surface = eglCreateWindowSurface(s_display, egl_config, win, NULL);
   if (!s_surface) { debugPrintf("egl: no surface\n"); return 0; }
 
   const EGLint ctx_attr[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
-  s_context = eglCreateContext(s_display, config, EGL_NO_CONTEXT, ctx_attr);
+  s_context = eglCreateContext(s_display, egl_config, EGL_NO_CONTEXT, ctx_attr);
   if (!s_context) { debugPrintf("egl: no context\n"); return 0; }
 
   eglMakeCurrent(s_display, s_surface, s_surface, s_context);
-  eglSwapInterval(s_display, 1);
+  eglSwapInterval(s_display, 1); // present every vsync: always target the panel's max (60)
   return 1;
 }
 
@@ -395,6 +401,30 @@ int main(void) {
   if (SDL_Init(SDL_INIT_AUDIO) < 0)
     debugPrintf("SDL_Init(audio) failed: %s\n", SDL_GetError());
 
+  // Spread our threads across every core the system grants this process. Launched
+  // via a game override the Switch hands an application cores 0,1,2 (core 3 is
+  // reserved for the OS). The loader starts the main thread with the full mask,
+  // but we set it explicitly so the affinity is inherited by the threads created
+  // afterwards -- notably mesa's glthread GL-submission worker -- letting the
+  // render thread and the GL thread run on different cores instead of contending
+  // for one. This is what lets a single-threaded engine keep up on stock clocks.
+  {
+    u64 cores = 0;
+    if (R_SUCCEEDED(svcGetInfo(&cores, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)) && cores) {
+      const int ideal = __builtin_ctzll(cores); // lowest granted core (valid ideal)
+      svcSetThreadCoreMask(CUR_THREAD_HANDLE, ideal, cores);
+    }
+  }
+
+  // Ask mesa to run GL command submission on a worker thread (glthread). The
+  // engine renders single-threaded and spends much of each frame inside the
+  // nouveau driver building command buffers; glthread moves that onto a spare
+  // CPU core, shortening the per-frame critical path that otherwise needs a
+  // CPU/EMC overclock to hold 60. Must be set before the GL context is created;
+  // harmless no-op if this mesa build doesn't support it.
+  if (config.gl_threaded)
+    setenv("mesa_glthread", "true", 1);
+
   if (!egl_init())
     fatal_error("Failed to create an OpenGL ES 2.0 context.");
 
@@ -531,6 +561,35 @@ int main(void) {
 
     if (boot_frames < 10 && ++boot_frames == 10)
       cpu_boost(0);
+
+#if DEBUG_INSTR
+    // bucket frame durations; dump a one-line summary every ~5s. A high
+    // over16ms/over33ms count while walking diagonally => real presentation
+    // hitches (GPU/streaming bound), which delta pacing cannot hide.
+    {
+      static u64 fi_freq = 0, fi_last = 0, fi_t0 = 0;
+      static u32 fi_frames = 0, fi_o16 = 0, fi_o33 = 0, fi_max_us = 0;
+      if (!fi_freq) { fi_freq = armGetSystemTickFreq(); fi_last = fi_t0 = armGetSystemTick(); }
+      const u64 nowt = armGetSystemTick();
+      const u64 us = (nowt - fi_last) * 1000000ull / fi_freq;
+      fi_last = nowt;
+      fi_frames++;
+      if (us > 17000) fi_o16++;            // overran one vsync
+      if (us > 34000) fi_o33++;            // dropped a whole frame
+      if (us > fi_max_us) fi_max_us = (u32)us;
+      if ((nowt - fi_t0) * 1000ull / fi_freq >= 5000) {
+        FILE *fl = fopen("frametime.log", "a");
+        if (fl) {
+          const double secs = (double)(nowt - fi_t0) / (double)fi_freq;
+          fprintf(fl, "frames=%u avg=%.2fms max=%.1fms over17ms=%u over34ms=%u\n",
+                  fi_frames, fi_frames ? secs * 1000.0 / fi_frames : 0.0,
+                  fi_max_us / 1000.0, fi_o16, fi_o33);
+          fclose(fl);
+        }
+        fi_frames = fi_o16 = fi_o33 = fi_max_us = 0; fi_t0 = nowt;
+      }
+    }
+#endif
   }
 
   prefs_flush();

@@ -16,7 +16,12 @@
 #define CONFIG_VARS \
   CONFIG_VAR_INT(screen_width); \
   CONFIG_VAR_INT(screen_height); \
-  CONFIG_VAR_STR(language);
+  CONFIG_VAR_STR(language); \
+  CONFIG_VAR_INT(gl_threaded); \
+  CONFIG_VAR_INT(game_font); \
+  CONFIG_VAR_STR(game_font_path); \
+  CONFIG_VAR_FLOAT(game_font_scale); \
+  CONFIG_VAR_FLOAT(game_font_xscale);
 
 Config config;
 static int config_needs_rewrite = 0;
@@ -43,6 +48,11 @@ int read_config(const char *file) {
   config.screen_width = -1; // auto
   config.screen_height = -1;
   strlcpy(config.language, LANG_DEFAULT, sizeof(config.language));
+  config.gl_threaded = 1;   // offload GL submission to a second core by default
+  config.game_font = 1;     // try the in-game font for system-font labels (testing)
+  config.game_font_path[0] = 0; // empty: probe common asset locations
+  config.game_font_scale = 1.0f; // 1.0 = auto-fit cap height to the shared font
+  config.game_font_xscale = 1.0f; // 1.0 = no horizontal squeeze
 
   FILE *f = fopen(file, "r");
   if (f == NULL)
@@ -73,6 +83,11 @@ int read_config(const char *file) {
 
   fclose(f);
 
+  // language must never be empty (a malformed line could blank it); the rest of
+  // the engine indexes localisation tables with it.
+  if (!config.language[0])
+    strlcpy(config.language, LANG_DEFAULT, sizeof(config.language));
+
   return config_needs_rewrite ? 1 : 0;
 }
 
@@ -83,7 +98,9 @@ int write_config(const char *file) {
 
   #define CONFIG_VAR_INT(var) fprintf(f, "%s %d\n", #var, config.var)
   #define CONFIG_VAR_FLOAT(var) fprintf(f, "%s %g\n", #var, config.var)
-  #define CONFIG_VAR_STR(var) fprintf(f, "%s %s\n", #var, config.var[0] ? config.var : LANG_DEFAULT)
+  // write strings verbatim (empty stays empty); language is guaranteed non-empty
+  // by read_config, so it never needs the old LANG_DEFAULT fallback here.
+  #define CONFIG_VAR_STR(var) fprintf(f, "%s %s\n", #var, config.var)
   CONFIG_VARS
   #undef CONFIG_VAR_INT
   #undef CONFIG_VAR_FLOAT

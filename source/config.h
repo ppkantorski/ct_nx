@@ -26,6 +26,15 @@
 
 #define DEBUG_LOG 0
 
+// Opt-in diagnostics (no effect on a normal build). Set to 1 to write:
+//   textdbg.log   -- every text-bitmap request (text, size, align, box w/h),
+//                    so we can see exactly how the name/input fields are laid out
+//   frametime.log -- a frame-time summary every ~5s (how many frames overran the
+//                    16.67ms vsync budget), to tell GPU/streaming hitches apart
+//                    from delta-time jitter.
+// Both files land next to config.txt in /switch/ct/.
+#define DEBUG_INSTR 0
+
 extern int screen_width;
 extern int screen_height;
 
@@ -36,6 +45,34 @@ typedef struct {
   int screen_width;
   int screen_height;
   char language[8];
+  // Performance knobs (see read_config for defaults):
+  //   gl_threaded -- 1 = run mesa's GL command submission on a second CPU core
+  //                  (glthread). The engine is single-threaded and spends much
+  //                  of each frame inside the nouveau driver; this offloads that
+  //                  onto a spare core, shortening the critical path that
+  //                  otherwise needs a CPU/EMC overclock to reach 60fps. Set 0
+  //                  to disable if it causes trouble. No-op if mesa lacks it.
+  //   game_font   -- 1 = render the engine's *system-font* labels with a TTF from
+  //                  the game/SD instead of the Switch shared font, so they match
+  //                  the in-game look. (The game's own TTF labels are unaffected;
+  //                  they're already drawn by the engine.) Glyphs the game font
+  //                  lacks fall back to the shared font. Set 0 for the old look.
+  //   game_font_path -- path to the TTF to use for game_font. Relative to the
+  //                  /switch/ct dir (e.g. "assets/font/xxxxx.ttf"). If empty, a
+  //                  few common asset locations are probed; if none load, falls
+  //                  back to the shared font.
+  //   game_font_scale -- fine-tune multiplier on the game font's auto-fitted
+  //                  size. 1.0 = auto (cap height matched to the shared font);
+  //                  lower (e.g. 0.85) if it still looks too big, higher if small.
+  //   game_font_xscale -- horizontal-only squeeze for the game font. 1.0 = none.
+  //                  Use < 1 (e.g. 0.7) to condense a wide/monospaced font so the
+  //                  game's pre-broken lines stay inside their window. A
+  //                  proportional CT font usually needs no squeeze.
+  int gl_threaded;
+  int game_font;
+  char game_font_path[256];
+  float game_font_scale;
+  float game_font_xscale;
 } Config;
 
 extern Config config;

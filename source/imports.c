@@ -228,6 +228,66 @@ static int clock_gettime_fake(int clk, struct timespec *tp) {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// frame pacing
+// cocos2d-x 3.14.1's Director::calculateDeltaTime() derives the per-frame delta
+// time from a single gettimeofday() sample each frame; everything (movement,
+// scrolling, animation) is scaled by that delta. Frame-time logging shows the
+// field maps run at a jittery ~43-58fps (each frame ~17-29ms, not a locked 60),
+// so the raw per-frame delta swings several ms frame-to-frame. On 2D maps that
+// swing is invisible on one axis but very visible scrolling diagonally, because
+// X and Y round sub-pixel differently each frame -> the "diagonal stutter".
+//
+// We can't make the engine render at 60 (that's GPU bound -- overclock or lower
+// the resolution), but we can stop the *delta* from jittering: we hand the
+// engine a virtual clock whose per-frame step is a low-passed (EMA) version of
+// the real frame time. That tracks the true average frame rate (no slow-motion
+// drift) while smoothing the 17<->29ms wobble into a steady step, so motion is
+// uniform per displayed frame. A long gap (load/pause/scene build) is clamped to
+// a single frame so the world never lurches across a 100ms+ spike. Same-frame
+// re-queries are ignored; other gettimeofday callers (timestamps/RNG) only need
+// coarse wall time, which the virtual clock still tracks closely between spikes.
+static int gettimeofday_paced(struct timeval *tv, void *tz) {
+  (void)tz;
+  struct timeval real;
+  gettimeofday(&real, NULL);
+  if (!tv) return 0;
+
+  const double VS  = 1.0 / 60.0;                                   // vsync period
+  const double now = (double)real.tv_sec + (double)real.tv_usec / 1e6;
+
+  static int    inited    = 0;
+  static double virt      = 0.0;   // smoothed time handed to the engine
+  static double last_real = 0.0;   // real time at the previous frame sample
+  static double smooth    = 1.0 / 60.0; // low-passed per-frame delta
+
+  if (!inited) {
+    inited = 1;
+    virt = now;
+    last_real = now;
+  } else if (now - last_real >= 0.002) {
+    // a genuine new frame (ignore same-frame re-queries < 2ms apart)
+    double dt = now - last_real;
+    last_real = now;
+    if (dt > 0.10) {
+      // load/pause spike: advance one nominal frame so motion doesn't teleport,
+      // and reset the filter to the real cadence on the far side of the gap.
+      virt   += VS;
+      smooth  = VS;
+    } else {
+      // EMA low-pass: ~5-frame time constant kills the frame-to-frame jitter
+      // while still following the real average frame rate.
+      smooth = smooth * 0.80 + dt * 0.20;
+      virt  += smooth;
+    }
+  }
+
+  tv->tv_sec  = (time_t)virt;
+  long usec   = (long)((virt - (double)(time_t)virt) * 1e6);
+  tv->tv_usec = usec < 0 ? 0 : (usec > 999999 ? 999999 : usec);
+  return 0;
+}
+
 // dlsym: cocos probes GL/EGL extensions through it. Resolve via eglGetProcAddress
 // first, then fall back to our own import table.
 DynLibFunction *so_find_import(DynLibFunction *funcs, int num_funcs, const char *name);
@@ -544,7 +604,7 @@ DynLibFunction dynlib_functions[] = {
   { "trunc", (uintptr_t)&trunc },
 
   // time
-  { "gettimeofday", (uintptr_t)&gettimeofday },
+  { "gettimeofday", (uintptr_t)&gettimeofday_paced },
   { "clock_gettime", (uintptr_t)&clock_gettime_fake },
   { "clock", (uintptr_t)&clock },
   { "gmtime", (uintptr_t)&gmtime },

@@ -13,7 +13,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 TARGET		:=	ct_nx
 APP_TITLE	:=	CHRONO TRIGGER
 APP_AUTHOR	:=	naga
-APP_VERSION	:=	1.0.1
+APP_VERSION	:=	1.0.2
 BUILD		:=	build
 SOURCES		:=	source
 DATA		:=	data
@@ -25,12 +25,18 @@ INCLUDES	:=	source
 #---------------------------------------------------------------------------------
 ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 
-CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
+CFLAGS	:=	-g -Wall -O3 -ffunction-sections -flto \
+            -fuse-linker-plugin -fomit-frame-pointer -finline-small-functions \
+            -fno-strict-aliasing -frename-registers -falign-functions=16 \
 			$(ARCH) $(DEFINES)
 
 CFLAGS	+=	$(INCLUDE) -D__SWITCH__
 
-CXXFLAGS	:= $(CFLAGS)
+# Enable Logging
+CFLAGS += -DEBUG_INSTR=0
+
+
+CXXFLAGS	:= $(CFLAGS) -std=c++26 -Wno-dangling-else -ffast-math -fno-unwind-tables -fno-asynchronous-unwind-tables 
 
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
@@ -44,6 +50,9 @@ LIBS	:= -lSDL2 -lGLESv2 -lEGL -lglapi -ldrm_nouveau \
 			-ldav1d -lopus -lvorbisidec -lwebp -logg -Wl,--end-group \
 			-Wl,--start-group -lfreetype -lharfbuzz -Wl,--end-group \
 			-lpng -lbz2 -lz -lnx -lm
+
+CXXFLAGS += -fno-exceptions -ffunction-sections -fdata-sections -fno-rtti
+LDFLAGS += -Wl,--as-needed -Wl,--gc-sections
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
