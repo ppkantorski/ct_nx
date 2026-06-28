@@ -384,13 +384,31 @@ static int lang_index(void) {
   if (!strcmp(l, "ko")) return 8;
   return 1; // default English
 }
+// Cached at startup; the language never changes at runtime so we don't need
+// to re-run the strcmp chain every frame.
+static int g_lang_idx = 1;
 static void force_language(void) {
-  if (e_lang_var) *e_lang_var = lang_index();
+  if (e_lang_var) *e_lang_var = g_lang_idx;
 }
 
 // ---------------------------------------------------------------------------
 // touch -- single pointer mapped into the engine's screen space
 // ---------------------------------------------------------------------------
+
+// Pre-allocated static arrays for the touch-move JNI call.  The engine only
+// ever sees one touch point (single-finger), so these are always length-1.
+// Using static storage avoids three malloc/free pairs (+ six mutex lock/unlock
+// calls on the local-ref registry) every frame while a finger is held down.
+static int   s_touch_ids[1]   = { 0 };
+static float s_touch_xs[1]    = { 0 };
+static float s_touch_ys[1]    = { 0 };
+// Fake JNI array headers that point at the static data above.
+// FakePriArray layout: tag, len, elem_size, data -- must match jni_fake.c.
+typedef struct { uint32_t tag; int len; int elem_size; void *data; } TouchPriArray;
+#define TAG_PRIARR_TOUCH 0x50415231u // 'PAR1', same as TAG_PRIARR in jni_fake.c
+static TouchPriArray s_jids = { TAG_PRIARR_TOUCH, 1, 4, s_touch_ids };
+static TouchPriArray s_jxs  = { TAG_PRIARR_TOUCH, 1, 4, s_touch_xs  };
+static TouchPriArray s_jys  = { TAG_PRIARR_TOUCH, 1, 4, s_touch_ys  };
 
 static int touch_down = 0;
 static float last_tx = 0, last_ty = 0;
@@ -409,13 +427,10 @@ static void update_touch(void) {
       touch_down = 1;
       if (e_touchBegin) e_touchBegin(fake_env, thiz, 0, x, y);
     } else if (e_touchMove) {
-      int ids[1] = { 0 };
-      float xs[1] = { x }, ys[1] = { y };
-      void *jids = jni_new_int_array(ids, 1);
-      void *jxs = jni_new_float_array(xs, 1);
-      void *jys = jni_new_float_array(ys, 1);
-      e_touchMove(fake_env, thiz, jids, jxs, jys);
-      jni_delete_ref(jids); jni_delete_ref(jxs); jni_delete_ref(jys);
+      // Update the static arrays in-place; no heap allocation needed.
+      s_touch_xs[0] = x;
+      s_touch_ys[0] = y;
+      e_touchMove(fake_env, thiz, &s_jids, &s_jxs, &s_jys);
     }
     last_tx = x; last_ty = y;
   } else if (touch_down) {
@@ -561,6 +576,7 @@ int main(void) {
   g_ctrl_name = jni_make_string("Nintendo Switch Controller");
 
   // force the UI language before the engine builds the title scene
+  g_lang_idx = lang_index();
   force_language();
 
   // JniHelper::setJavaVM + cocos_android_app_init (creates the AppDelegate)

@@ -141,6 +141,7 @@ typedef struct {
   int bitmap_left, bitmap_top;
   unsigned int width, rows;
   int pitch;
+  int abs_pitch;            // abs(pitch): row stride in bytes, cached to avoid a branch per row
   unsigned char *buffer;    // owned copy of the glyph bitmap; NULL if blank (e.g. space)
 } CachedGlyph;
 
@@ -184,13 +185,14 @@ static CachedGlyph *get_glyph_for_face(FT_Face face, uint32_t cp, int px, FT_UIn
   c->width = sl->bitmap.width;
   c->rows = sl->bitmap.rows;
   c->pitch = sl->bitmap.pitch;
+  c->abs_pitch = c->pitch < 0 ? -c->pitch : c->pitch;
   if (c->rows > 0 && c->pitch != 0) {
     // FreeType's buffer pointer is always the lowest address in memory and
     // spans rows * |pitch| bytes, regardless of pitch's sign; copying that
     // verbatim and keeping the original (possibly negative) pitch means
     // indexing the copy later behaves exactly like indexing FreeType's own
     // buffer would have.
-    size_t n = (size_t)c->rows * (size_t)(c->pitch < 0 ? -c->pitch : c->pitch);
+    size_t n = (size_t)c->rows * (size_t)c->abs_pitch;
     c->buffer = malloc(n);
     if (c->buffer) memcpy(c->buffer, sl->bitmap.buffer, n);
     else c->rows = 0; // OOM: degrade to a blank glyph rather than risk a bad read
@@ -409,7 +411,7 @@ static void blit_glyph(unsigned char *out, int W, int H,
     const int dy = gy + (int)ry;
     if (dy < 0 || dy >= H) continue;
 
-    const uint8_t *cov_row = g->buffer + (size_t)ry * (size_t)(g->pitch < 0 ? -g->pitch : g->pitch) + rx0;
+    const uint8_t *cov_row = g->buffer + (size_t)ry * (size_t)g->abs_pitch + rx0;
     unsigned char *dst_row = out + ((size_t)dy * (size_t)W + (size_t)x0_abs) * 4;
 
     int rx = 0; // index into the clipped span
