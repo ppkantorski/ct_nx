@@ -91,22 +91,21 @@ static void check_data(void) {
   if (stat(ASSETS_DIR, &st) < 0) fatal_error("Could not find the\n%s/ folder.\nCheck your data files.", ASSETS_DIR);
 }
 
-static void set_screen_size(int w, int h) {
-  // Explicit width/height are honoured up to 4K so you can render ABOVE the
-  // panel/HDMI output (e.g. 2489x1400 or 2560x1440) -- the compositor downscales
-  // it to the real output, i.e. supersampling for a sharper image at extra GPU
-  // cost. Keep a 16:9 ratio (2489x1400, 2560x1440, 3840x2160) to avoid stretch.
-  // -1/-1 (or anything out of range) auto-picks 1920x1080 docked / 1280x720
-  // handheld. Note: explicit values apply in BOTH modes, so set -1 for handheld.
-  if (w <= 0 || h <= 0 || w > 3840 || h > 2160) {
-    if (appletGetOperationMode() == AppletOperationMode_Console) {
-      screen_width = 1920; screen_height = 1080;
-    } else {
-      screen_width = 1280; screen_height = 720;
-    }
+static void set_screen_size(AppletOperationMode mode) {
+  // Per-mode resolution -- see the Config struct doc comment in config.h.
+  // Explicit values are honoured up to 4K (supersampling); -1/-1 or anything
+  // out of range auto-picks the native size for that mode.
+  int w, h;
+  if (mode == AppletOperationMode_Console) {
+    w = config.screen_width_docked;
+    h = config.screen_height_docked;
+    if (w <= 0 || h <= 0 || w > 3840 || h > 2160) { w = 1920; h = 1080; }
   } else {
-    screen_width = w; screen_height = h;
+    w = config.screen_width_handheld;
+    h = config.screen_height_handheld;
+    if (w <= 0 || h <= 0 || w > 3840 || h > 2160) { w = 1280; h = 720; }
   }
+  screen_width = w; screen_height = h;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +115,7 @@ static void set_screen_size(int w, int h) {
 static EGLDisplay s_display = EGL_NO_DISPLAY;
 static EGLContext s_context = EGL_NO_CONTEXT;
 static EGLSurface s_surface = EGL_NO_SURFACE;
+static EGLConfig  s_egl_config; // picked once in egl_init, reused by egl_resize
 
 static int egl_init(void) {
   s_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -143,11 +143,10 @@ static int egl_init(void) {
     EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
     EGL_NONE
   };
-  EGLConfig egl_config;
   EGLint num = 0;
-  if (!eglChooseConfig(s_display, cfg_attr_16, &egl_config, 1, &num) || num < 1) {
+  if (!eglChooseConfig(s_display, cfg_attr_16, &s_egl_config, 1, &num) || num < 1) {
     debugPrintf("egl: 16-bit depth config unavailable, falling back to 24-bit\n");
-    if (!eglChooseConfig(s_display, cfg_attr_24, &egl_config, 1, &num) || num < 1) {
+    if (!eglChooseConfig(s_display, cfg_attr_24, &s_egl_config, 1, &num) || num < 1) {
       debugPrintf("egl: no config\n");
       return 0;
     }
@@ -155,15 +154,41 @@ static int egl_init(void) {
 
   NWindow *win = nwindowGetDefault();
   nwindowSetDimensions(win, screen_width, screen_height);
-  s_surface = eglCreateWindowSurface(s_display, egl_config, win, NULL);
+  s_surface = eglCreateWindowSurface(s_display, s_egl_config, win, NULL);
   if (!s_surface) { debugPrintf("egl: no surface\n"); return 0; }
 
   const EGLint ctx_attr[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
-  s_context = eglCreateContext(s_display, egl_config, EGL_NO_CONTEXT, ctx_attr);
+  s_context = eglCreateContext(s_display, s_egl_config, EGL_NO_CONTEXT, ctx_attr);
   if (!s_context) { debugPrintf("egl: no context\n"); return 0; }
 
   eglMakeCurrent(s_display, s_surface, s_surface, s_context);
   eglSwapInterval(s_display, 1); // present every vsync: always target the panel's max (60)
+  return 1;
+}
+
+// Re-target the render surface at the current screen_width/screen_height
+// (call set_screen_size() first). Used for live dock/undock resolution
+// switches. We deliberately destroy + recreate the EGLSurface rather than
+// just calling nwindowSetDimensions on the live one and hoping the driver
+// picks it up: that "transparent resize" behaviour is part of the EGL spec
+// for normal desktop window systems, but this is the NVN/nvnflinger-backed
+// nouveau winsys, not a standard windowing system, and whether an in-place
+// resize is honoured there isn't something we can confirm without hardware
+// testing both ways. Destroy-and-recreate is unambiguous: the new surface is
+// guaranteed to be allocated at the new size by construction. The EGLContext
+// is untouched -- a context is independent of any particular surface, so all
+// GL object state (textures, buffers, shaders) survives the swap intact.
+static int egl_resize(void) {
+  eglMakeCurrent(s_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  if (s_surface) { eglDestroySurface(s_display, s_surface); s_surface = EGL_NO_SURFACE; }
+
+  NWindow *win = nwindowGetDefault();
+  nwindowSetDimensions(win, screen_width, screen_height);
+  s_surface = eglCreateWindowSurface(s_display, s_egl_config, win, NULL);
+  if (!s_surface) { debugPrintf("egl: resize - no surface\n"); return 0; }
+
+  eglMakeCurrent(s_display, s_surface, s_surface, s_context);
+  eglSwapInterval(s_display, 1);
   return 1;
 }
 
@@ -186,6 +211,7 @@ static void (*e_nativeSetApkPath)(void *env, void *thiz, void *path);
 static void (*e_setAssetManager)(void *env, void *thiz, void *ctx, void *amgr);
 static void (*e_setExternalStorageInfo)(void *env, void *thiz, void *a, void *b, void *c);
 static void (*e_nativeInit)(void *env, void *thiz, int w, int h);
+static void (*e_nativeOnSurfaceChanged)(void *env, void *thiz, int w, int h);
 static void (*e_nativeRender)(void *env);  // NOTE: env only, no thiz
 static void (*e_nativeOnPause)(void);
 static void (*e_nativeOnResume)(void);
@@ -222,6 +248,7 @@ static void resolve_entry_points(void) {
   e_setAssetManager       = (void *)RX("Java_org_cocos2dx_cpp_AppActivity_setAssetManager");
   e_setExternalStorageInfo= (void *)RX("Java_org_cocos2dx_cpp_AppActivity_setExternalStorageInfo");
   e_nativeInit            = (void *)RX("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeInit");
+  e_nativeOnSurfaceChanged= (void *)RX("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnSurfaceChanged");
   e_nativeRender          = (void *)RX("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender");
   e_nativeOnPause         = (void *)RX("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnPause");
   e_nativeOnResume        = (void *)RX("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnResume");
@@ -402,12 +429,19 @@ static void update_touch(void) {
 int main(void) {
   cpu_boost(1);
 
-  if (read_config(CONFIG_NAME) != 0)
-    write_config(CONFIG_NAME);
+  // Always rewrite config.txt after parsing it: read_config seeds defaults
+  // for any key the file doesn't mention, but the file itself only gains
+  // that key once we explicitly resave it. (config_needs_rewrite exists to
+  // gate this but was never actually being set anywhere, so previously a
+  // freshly-added Config field would silently use its default forever
+  // without ever showing up in an existing config.txt -- worth knowing if
+  // you've added other config vars before now and wondered why.)
+  read_config(CONFIG_NAME);
+  write_config(CONFIG_NAME);
 
   check_syscalls();
   check_data();
-  set_screen_size(config.screen_width, config.screen_height);
+  set_screen_size(appletGetOperationMode());
 
   plInitialize(PlServiceType_User);
   gfx_init();
@@ -560,7 +594,26 @@ int main(void) {
 
   int paused = 0;
   int boot_frames = 0;
+  AppletOperationMode cur_mode = appletGetOperationMode();
   while (appletMainLoop() && !jni_quit_requested) {
+    // dock/undock: switch resolution live. appletGetOperationMode() just
+    // reads a value libnx already keeps in sync from the focus/state-change
+    // notifications appletMainLoop() pumps above, so polling it every frame
+    // is the same cheap pattern as the appletGetFocusState() check below --
+    // no extra IPC round trip.
+    {
+      const AppletOperationMode new_mode = appletGetOperationMode();
+      if (new_mode != cur_mode) {
+        cur_mode = new_mode;
+        set_screen_size(cur_mode);
+        if (egl_resize() && e_nativeOnSurfaceChanged)
+          // tells cocos2d-x's GLView the physical frame size changed, so it
+          // recomputes the viewport/scale factor against the (unchanged)
+          // design resolution -- the same path Android uses for rotation.
+          e_nativeOnSurfaceChanged(fake_env, thiz, screen_width, screen_height);
+      }
+    }
+
     // pause/resume on focus changes
     const int focused = appletGetFocusState() == AppletFocusState_InFocus;
     if (!focused && !paused) { if (e_nativeOnPause) e_nativeOnPause(); paused = 1; }

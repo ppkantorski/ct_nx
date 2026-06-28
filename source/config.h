@@ -42,8 +42,18 @@ extern int screen_height;
 #define LANG_DEFAULT "en"
 
 typedef struct {
-  int screen_width;
-  int screen_height;
+  // Per-mode render resolution. -1/-1 (or anything out of range) auto-picks
+  // 1280x720 handheld / 1920x1080 docked. An explicit value is honoured up to
+  // 4K, so you can also render ABOVE native for supersampling (e.g. 2560x1440
+  // docked) -- the compositor scales it to the real output either way. Keep a
+  // 16:9 ratio to avoid stretch. The two pairs are independent: e.g. stay near
+  // native docked (where GPU clock is higher) while scaling down further in
+  // handheld. Applied live -- changing dock state mid-session resizes the
+  // render target and tells the engine, no restart needed.
+  int screen_width_handheld;
+  int screen_height_handheld;
+  int screen_width_docked;
+  int screen_height_docked;
   char language[8];
   // Performance knobs (see read_config for defaults):
   //   gl_threaded -- 1 = run mesa's GL command submission on a second CPU core

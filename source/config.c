@@ -14,8 +14,10 @@
 #include "config.h"
 
 #define CONFIG_VARS \
-  CONFIG_VAR_INT(screen_width); \
-  CONFIG_VAR_INT(screen_height); \
+  CONFIG_VAR_INT(screen_width_handheld); \
+  CONFIG_VAR_INT(screen_height_handheld); \
+  CONFIG_VAR_INT(screen_width_docked); \
+  CONFIG_VAR_INT(screen_height_docked); \
   CONFIG_VAR_STR(language); \
   CONFIG_VAR_INT(gl_threaded); \
   CONFIG_VAR_INT(gl_no_error); \
@@ -49,8 +51,10 @@ int read_config(const char *file) {
 
   memset(&config, 0, sizeof(Config));
   config_needs_rewrite = 0;
-  config.screen_width = -1; // auto
-  config.screen_height = -1;
+  config.screen_width_handheld = -1;  // auto: 1280x720
+  config.screen_height_handheld = -1;
+  config.screen_width_docked = -1;    // auto: 1920x1080
+  config.screen_height_docked = -1;
   strlcpy(config.language, LANG_DEFAULT, sizeof(config.language));
   config.gl_threaded = 1;   // offload GL submission to a second core by default
   config.gl_no_error = 1;   // skip mesa's GL call validation by default
