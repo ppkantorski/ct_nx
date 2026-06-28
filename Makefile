@@ -28,12 +28,13 @@ ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CFLAGS	:=	-g -Wall -O3 -ffunction-sections -flto \
             -fuse-linker-plugin -fomit-frame-pointer -finline-small-functions \
             -fno-strict-aliasing -frename-registers -falign-functions=16 \
+            -ftree-vectorize \
 			$(ARCH) $(DEFINES)
 
 CFLAGS	+=	$(INCLUDE) -D__SWITCH__
 
 # Enable Logging
-CFLAGS += -DEBUG_INSTR=0
+#CFLAGS += -DEBUG_INSTR=0
 
 
 CXXFLAGS	:= $(CFLAGS) -std=c++26 -Wno-dangling-else -ffast-math -fno-unwind-tables -fno-asynchronous-unwind-tables 
