@@ -106,6 +106,19 @@ typedef struct {
   int text_shadow;
   int text_shadow_alpha;
   float text_shadow_scale;
+  // Runtime binary patches applied to libchrono.so at boot (before so_finalize).
+  // Each flag is independent; disable any that cause trouble with a future build.
+  //   cursor_fix         -- keep selected-item text WHITE and use a dark
+  //                         semi-transparent highlight instead of the cream
+  //                         colour-inversion look.
+  //   remove_bilinear_filter -- force GL_NEAREST (pixel-perfect point sampling)
+  //                         everywhere instead of bilinear texture filtering.
+  //   remove_mobile_ui   -- hide the on-screen touch-overlay buttons (field
+  //                         menu button, world-map menu/map/warp buttons, and
+  //                         all five right-side title-screen icon buttons).
+  int cursor_fix;
+  int remove_bilinear_filter;
+  int remove_mobile_ui;
 } Config;
 
 extern Config config;

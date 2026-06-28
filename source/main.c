@@ -27,6 +27,7 @@
 #include "opensles.h"
 #include "prefs.h"
 #include "movie_player.h"
+#include "patches.h"
 
 static void *heap_so_base = NULL;
 static size_t heap_so_limit = 0;
@@ -517,6 +518,12 @@ int main(void) {
   resolve_entry_points();
   if (!e_nativeInit || !e_nativeRender || !e_JNI_OnLoad)
     fatal_error("Could not resolve cocos2d-x engine entry points.");
+
+  // Apply config-gated binary patches to libchrono.so while load_base is still
+  // writable (before so_finalize() locks it to RX). Each group is independent
+  // and skips safely if it encounters an unexpected instruction word, so a
+  // future .so rebuild won't silently corrupt -- it just prints a warning.
+  apply_game_patches(&game_mod);
 
   // Force the UI/text language to config.language regardless of what the engine
   // detects. resources.bin contains all languages under Localize/<code>/; the

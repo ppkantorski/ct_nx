@@ -31,7 +31,10 @@
   CONFIG_VAR_FLOAT(game_font_xscale); \
   CONFIG_VAR_INT(text_shadow); \
   CONFIG_VAR_INT(text_shadow_alpha); \
-  CONFIG_VAR_FLOAT(text_shadow_scale);
+  CONFIG_VAR_FLOAT(text_shadow_scale); \
+  CONFIG_VAR_INT(cursor_fix); \
+  CONFIG_VAR_INT(remove_bilinear_filter); \
+  CONFIG_VAR_INT(remove_mobile_ui);
 
 Config config;
 
@@ -76,6 +79,9 @@ static void set_defaults(void) {
   config.text_shadow = 1;         // crisp CT-style drop shadow on system-font labels
   config.text_shadow_alpha = 230; // shadow opacity 0..255 (black)
   config.text_shadow_scale = 1.0f; // offset multiplier (auto offset scales w/ size)
+  config.cursor_fix = 1;           // keep selected text WHITE, dark highlight
+  config.remove_bilinear_filter = 1; // force GL_NEAREST (pixel-perfect filtering)
+  config.remove_mobile_ui = 1;     // hide touch-overlay buttons
 }
 
 // One-time migration from the old flat "key value" config.txt, for anyone
