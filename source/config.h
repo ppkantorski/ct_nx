@@ -52,6 +52,11 @@ typedef struct {
   //                  onto a spare core, shortening the critical path that
   //                  otherwise needs a CPU/EMC overclock to reach 60fps. Set 0
   //                  to disable if it causes trouble. No-op if mesa lacks it.
+  //   gl_no_error -- 1 = skip mesa's internal validation of GL calls (bad enum/
+  //                  state checks) before they reach the driver. cocos2d-x's
+  //                  calls are already well-formed, so this just removes CPU
+  //                  bookkeeping on a path that fires constantly. Set 0 if a
+  //                  future mesa build ever mishandles it.
   //   game_font   -- 1 = render the engine's *system-font* labels with a TTF from
   //                  the game/SD instead of the Switch shared font, so they match
   //                  the in-game look. (The game's own TTF labels are unaffected;
@@ -78,6 +83,7 @@ typedef struct {
   //                  the glyph size, ~1px per 12px of glyph). 1.0 = default; >1 for
   //                  a heavier shadow, <1 for a tighter one.
   int gl_threaded;
+  int gl_no_error;
   int game_font;
   char game_font_path[256];
   float game_font_scale;

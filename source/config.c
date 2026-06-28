@@ -18,6 +18,7 @@
   CONFIG_VAR_INT(screen_height); \
   CONFIG_VAR_STR(language); \
   CONFIG_VAR_INT(gl_threaded); \
+  CONFIG_VAR_INT(gl_no_error); \
   CONFIG_VAR_INT(game_font); \
   CONFIG_VAR_STR(game_font_path); \
   CONFIG_VAR_FLOAT(game_font_scale); \
@@ -52,6 +53,7 @@ int read_config(const char *file) {
   config.screen_height = -1;
   strlcpy(config.language, LANG_DEFAULT, sizeof(config.language));
   config.gl_threaded = 1;   // offload GL submission to a second core by default
+  config.gl_no_error = 1;   // skip mesa's GL call validation by default
   config.game_font = 1;     // try the in-game font for system-font labels (testing)
   config.game_font_path[0] = 0; // empty: probe common asset locations
   config.game_font_scale = 1.0f; // 1.0 = auto-fit cap height to the shared font

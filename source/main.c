@@ -123,8 +123,20 @@ static int egl_init(void) {
   eglInitialize(s_display, NULL, NULL);
   if (!eglBindAPI(EGL_OPENGL_ES_API)) { debugPrintf("egl: bindAPI failed\n"); return 0; }
 
-  // cocos default GLContextAttrs: RGBA8888, depth24, stencil8, no MSAA
-  const EGLint cfg_attr[] = {
+  // cocos default GLContextAttrs: RGBA8888, depth24, stencil8, no MSAA.
+  // Try a lighter 16-bit depth buffer first -- the 2D renderer's vertexZ/
+  // clipping usage needs nowhere near 24-bit precision, and trimming it saves
+  // a little framebuffer bandwidth. Fall back to the original 24/8 if this
+  // GPU/driver only exposes a combined 24-bit-depth+8-bit-stencil format
+  // (common on Tegra/nouveau), so a missing 16/8 combo never blocks boot.
+  const EGLint cfg_attr_16[] = {
+    EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+    EGL_DEPTH_SIZE, 16, EGL_STENCIL_SIZE, 8,
+    EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+    EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+    EGL_NONE
+  };
+  const EGLint cfg_attr_24[] = {
     EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
     EGL_DEPTH_SIZE, 24, EGL_STENCIL_SIZE, 8,
     EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
@@ -133,9 +145,12 @@ static int egl_init(void) {
   };
   EGLConfig egl_config;
   EGLint num = 0;
-  if (!eglChooseConfig(s_display, cfg_attr, &egl_config, 1, &num) || num < 1) {
-    debugPrintf("egl: no config\n");
-    return 0;
+  if (!eglChooseConfig(s_display, cfg_attr_16, &egl_config, 1, &num) || num < 1) {
+    debugPrintf("egl: 16-bit depth config unavailable, falling back to 24-bit\n");
+    if (!eglChooseConfig(s_display, cfg_attr_24, &egl_config, 1, &num) || num < 1) {
+      debugPrintf("egl: no config\n");
+      return 0;
+    }
   }
 
   NWindow *win = nwindowGetDefault();
@@ -424,6 +439,13 @@ int main(void) {
   // harmless no-op if this mesa build doesn't support it.
   if (config.gl_threaded)
     setenv("mesa_glthread", "true", 1);
+
+  // Skip mesa's internal validation of GL calls (bad enum/state checks) before
+  // they reach the driver -- cocos2d-x's calls are already well-formed, so this
+  // just removes CPU bookkeeping on a path that fires constantly. No behavioral
+  // effect on a correct caller; harmless no-op if this mesa build lacks it.
+  if (config.gl_no_error)
+    setenv("MESA_NO_ERROR", "1", 1);
 
   if (!egl_init())
     fatal_error("Failed to create an OpenGL ES 2.0 context.");
