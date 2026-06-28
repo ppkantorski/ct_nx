@@ -391,19 +391,23 @@ static int create_text_bitmap(va_list va) {
   int width = va_arg(va, int);                  // 9 constraint width (0 = auto)
   int height = va_arg(va, int);                 // 10 constraint height (0 = auto)
   // 11..23 shadow/stroke/wrap/overflow; jboolean->int, jfloat->double in varargs
-  (void)va_arg(va, int);   // 11 shadow
-  (void)va_arg(va, double); // 12 shadowDX
-  (void)va_arg(va, double); // 13 shadowDY
-  (void)va_arg(va, double); // 14 shadowBlur
-  (void)va_arg(va, double); // 15 shadowOpacity
-  (void)va_arg(va, int);    // 16 stroke
-  (void)va_arg(va, int);    // 17 strokeR
-  (void)va_arg(va, int);    // 18 strokeG
-  (void)va_arg(va, int);    // 19 strokeB
-  (void)va_arg(va, int);    // 20 strokeA
-  (void)va_arg(va, double); // 21 strokeSize
-  int wrap = va_arg(va, int); // 22 enableWrap
-  (void)va_arg(va, int);    // 23 overflow
+  int    shadow        = va_arg(va, int);     // 11
+  double shadowDX      = va_arg(va, double);  // 12
+  double shadowDY      = va_arg(va, double);  // 13
+  double shadowBlur    = va_arg(va, double);  // 14
+  double shadowOpacity = va_arg(va, double);  // 15
+  int    stroke        = va_arg(va, int);     // 16
+  int    strokeR       = va_arg(va, int);     // 17
+  int    strokeG       = va_arg(va, int);     // 18
+  int    strokeB       = va_arg(va, int);     // 19
+  int    strokeA       = va_arg(va, int);     // 20
+  double strokeSize    = va_arg(va, double);  // 21
+  int wrap = va_arg(va, int);                 // 22 enableWrap
+  (void)va_arg(va, int);                      // 23 overflow
+#if !DEBUG_INSTR
+  (void)shadow; (void)shadowDX; (void)shadowDY; (void)shadowBlur; (void)shadowOpacity;
+  (void)stroke; (void)strokeR; (void)strokeG; (void)strokeB; (void)strokeA; (void)strokeSize;
+#endif
 
   if (!g_bitmap_cb || !text || text->tag != TAG_PRIARR)
     return 0;
@@ -416,13 +420,18 @@ static int create_text_bitmap(va_list va) {
 
 #if DEBUG_INSTR
   // log how the engine lays out this text so we can see the input field's real
-  // alignment/box (grep the entered name in textdbg.log).
+  // alignment/box AND the exact fill colour + shadow/stroke it asks for (grep the
+  // option text in textdbg.log; rgba= is the fill colour the engine requested).
   {
     FILE *tl = fopen("textdbg.log", "a");
     if (tl) {
-      fprintf(tl, "text='%s' font='%s' size=%d alignH=%d alignV=%d boxW=%d boxH=%d wrap=%d\n",
-              str, font_name ? font_name : "", fontSize,
-              align & 0x0F, (align >> 4) & 0x0F, width, height, wrap);
+      fprintf(tl, "text='%s' font='%s' size=%d rgba=%d,%d,%d,%d alignH=%d alignV=%d "
+                  "boxW=%d boxH=%d wrap=%d shadow=%d dx=%.1f dy=%.1f blur=%.1f op=%.2f "
+                  "stroke=%d srgba=%d,%d,%d,%d ssize=%.1f\n",
+              str, font_name ? font_name : "", fontSize, r, g, b, a,
+              align & 0x0F, (align >> 4) & 0x0F, width, height, wrap,
+              shadow, shadowDX, shadowDY, shadowBlur, shadowOpacity,
+              stroke, strokeR, strokeG, strokeB, strokeA, strokeSize);
       fclose(tl);
     }
   }

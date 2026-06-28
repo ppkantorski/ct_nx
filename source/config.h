@@ -68,11 +68,23 @@ typedef struct {
   //                  Use < 1 (e.g. 0.7) to condense a wide/monospaced font so the
   //                  game's pre-broken lines stay inside their window. A
   //                  proportional CT font usually needs no squeeze.
+  //   text_shadow -- 1 = draw a crisp drop shadow behind the system-font labels,
+  //                  in the classic CT/SNES style (offset down-right, hard-edged
+  //                  so it suits a pixel font; no blur). 0 = no shadow.
+  //   text_shadow_alpha -- shadow opacity, 0..255 (the shadow is black). It also
+  //                  scales with each label's own alpha, so fades stay consistent.
+  //                  Default 230 -- a strong, solid-looking shadow.
+  //   text_shadow_scale -- multiplier on the auto offset (which itself scales with
+  //                  the glyph size, ~1px per 12px of glyph). 1.0 = default; >1 for
+  //                  a heavier shadow, <1 for a tighter one.
   int gl_threaded;
   int game_font;
   char game_font_path[256];
   float game_font_scale;
   float game_font_xscale;
+  int text_shadow;
+  int text_shadow_alpha;
+  float text_shadow_scale;
 } Config;
 
 extern Config config;

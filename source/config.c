@@ -21,7 +21,10 @@
   CONFIG_VAR_INT(game_font); \
   CONFIG_VAR_STR(game_font_path); \
   CONFIG_VAR_FLOAT(game_font_scale); \
-  CONFIG_VAR_FLOAT(game_font_xscale);
+  CONFIG_VAR_FLOAT(game_font_xscale); \
+  CONFIG_VAR_INT(text_shadow); \
+  CONFIG_VAR_INT(text_shadow_alpha); \
+  CONFIG_VAR_FLOAT(text_shadow_scale);
 
 Config config;
 static int config_needs_rewrite = 0;
@@ -53,6 +56,9 @@ int read_config(const char *file) {
   config.game_font_path[0] = 0; // empty: probe common asset locations
   config.game_font_scale = 1.0f; // 1.0 = auto-fit cap height to the shared font
   config.game_font_xscale = 1.0f; // 1.0 = no horizontal squeeze
+  config.text_shadow = 1;         // crisp CT-style drop shadow on system-font labels
+  config.text_shadow_alpha = 230; // shadow opacity 0..255 (black)
+  config.text_shadow_scale = 1.0f; // offset multiplier (auto offset scales w/ size)
 
   FILE *f = fopen(file, "r");
   if (f == NULL)

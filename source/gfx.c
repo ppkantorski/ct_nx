@@ -269,6 +269,54 @@ static void line_ink_extents(const char *s, const char *end, int px,
   *above = a; *below = b;
 }
 
+// Composite one cached glyph into the premultiplied RGBA8888 buffer at (gx,gy).
+// cr/cg/cb are the 0-255 colour; ca scales the glyph coverage to a final alpha.
+// `under` selects the Porter-Duff operator:
+//   under == 0  source-OVER-dest -- the text: painted on top of whatever's there
+//               (the shadow, or the clear background -- on clear it reduces to a
+//               plain write, identical to the old path).
+//   under != 0  dest-OVER-source -- the shadow: slid *beneath* existing ink, so a
+//               glyph's shadow can never darken text that's already been drawn,
+//               whatever order the glyphs arrive in. That order-independence is
+//               what lets the shadow and the text be laid down in a single pass.
+// Both buffer and output stay premultiplied, matching nativeInitBitmapDC's format.
+static void blit_glyph(unsigned char *out, int W, int H,
+                       int gx, int gy, const CachedGlyph *g,
+                       int cr, int cg, int cb, int ca, int under) {
+  if (!g || !g->buffer || ca <= 0) return;
+  for (unsigned ry = 0; ry < g->rows; ry++) {
+    const int dy = gy + (int)ry;
+    if (dy < 0 || dy >= H) continue;
+    const uint8_t *srow = g->buffer + (size_t)ry * g->pitch;
+    for (unsigned rx = 0; rx < g->width; rx++) {
+      const int dx = gx + (int)rx;
+      if (dx < 0 || dx >= W) continue;
+      const int cov = srow[rx];
+      if (!cov) continue;
+      const int sa = cov * ca / 255;            // this fragment's alpha
+      if (!sa) continue;
+      unsigned char *px4 = out + ((size_t)dy * W + dx) * 4;
+      if (under) {
+        // dest-over-source: out = dst + src*(1 - dst_a). For a black shadow the
+        // colour terms are zero, so this only fills alpha where the cell is still
+        // (partly) clear -- never over the text.
+        const int id = 255 - px4[3];
+        px4[0] = (unsigned char)(px4[0] + cr * sa / 255 * id / 255);
+        px4[1] = (unsigned char)(px4[1] + cg * sa / 255 * id / 255);
+        px4[2] = (unsigned char)(px4[2] + cb * sa / 255 * id / 255);
+        px4[3] = (unsigned char)(px4[3] + sa * id / 255);
+      } else {
+        // source-over-dest: out = src + dst*(1 - src_a).
+        const int is = 255 - sa;
+        px4[0] = (unsigned char)(cr * sa / 255 + px4[0] * is / 255);
+        px4[1] = (unsigned char)(cg * sa / 255 + px4[1] * is / 255);
+        px4[2] = (unsigned char)(cb * sa / 255 + px4[2] * is / 255);
+        px4[3] = (unsigned char)(sa + px4[3] * is / 255);
+      }
+    }
+  }
+}
+
 unsigned char *gfx_render_text_rgba(const char *text, int font_size,
                                     int r, int g, int b, int a,
                                     int align_h, int align_v,
@@ -325,6 +373,24 @@ unsigned char *gfx_render_text_rgba(const char *text, int font_size,
   }
   if (rpx < 1) rpx = 1;
 
+  // Drop shadow (config.text_shadow): a crisp, hard-edged shadow offset down and
+  // to the right, in the classic CT/SNES style. The offset scales with the glyph
+  // size (so it stays the same *proportion* at every label size) -- ~1px per 12px
+  // of glyph -- rather than a blur, which would smear a pixel font. sh is the
+  // offset in pixels for both axes; shadow_a folds in the label's own alpha so a
+  // faded label fades its shadow with it.
+  int sh = 0, shadow_a = 0;
+  if (config.text_shadow && config.text_shadow_alpha > 0 && a > 0) {
+    double k = (config.text_shadow_scale > 0.0f) ? (double)config.text_shadow_scale : 1.0;
+    sh = (int)(rpx * k / 12.0 + 0.5);
+    if (sh < 1) sh = 1;
+    if (sh > 8) sh = 8;                       // keep it sane at huge sizes
+    int sa = config.text_shadow_alpha;
+    if (sa > 255) sa = 255;
+    shadow_a = a * sa / 255;
+    if (shadow_a <= 0) sh = 0;
+  }
+
   // split into lines on '\n'; optionally greedy-wrap to max_w
   // (we collect line start/end byte ranges)
   #define MAX_LINES 256
@@ -380,10 +446,26 @@ unsigned char *gfx_render_text_rgba(const char *text, int font_size,
   // the left, pushing the text right of the field's centre.
   // Height stays padded to max_h: the engine does NOT re-centre vertically, so
   // we centre the text in the box height ourselves (see y_off below).
-  int W = meas_w;
-  int H = max_h > 0 ? max_h : meas_h;
+  // sh extends the bitmap by the shadow offset on the right and bottom only, so
+  // the shadow always has room and is never clipped (the glyphs themselves stay
+  // aligned within the meas_w/meas_h content box -- see pen_x below).
+  int W = meas_w + sh;
+  int H = max_h > 0 ? max_h : (meas_h + sh);
   if (W <= 0) W = 1;
   if (H <= 0) H = 1;
+
+  // position the whole text block vertically within the (possibly taller) box.
+  // EditBox/label fields hand us a box taller than the text and expect it
+  // vertically centred; without this the glyphs pin to the top and sit high in
+  // the field. block_h is the laid-out text height (line cells). Computed before
+  // the buffer is sized so we can guarantee the last line's shadow row(s) fit.
+  const int block_h = nlines * line_h;
+  int y_off = 0;
+  if (align_v == GFX_VALIGN_CENTER)      y_off = (H - block_h) / 2;
+  else if (align_v == GFX_VALIGN_BOTTOM) y_off = H - block_h;
+  if (y_off < 0) y_off = 0;
+  if (H < y_off + block_h + sh) H = y_off + block_h + sh; // keep the shadow inside
+
   if (W > 4096) W = 4096;
   if (H > 4096) H = 4096;
 
@@ -391,35 +473,44 @@ unsigned char *gfx_render_text_rgba(const char *text, int font_size,
   if (!out)
     return NULL;
 
-  // position the whole text block vertically within the (possibly taller) box.
-  // EditBox/label fields hand us a box taller than the text and expect it
-  // vertically centred; without this the glyphs pin to the top and sit high in
-  // the field. block_h is the laid-out text height (line cells).
-  const int block_h = nlines * line_h;
-  int y_off = 0;
-  if (align_v == GFX_VALIGN_CENTER)      y_off = (H - block_h) / 2;
-  else if (align_v == GFX_VALIGN_BOTTOM) y_off = H - block_h;
-  if (y_off < 0) y_off = 0;
+  // Stable vertical reference for the game-font path. Every line is centred on
+  // ONE fixed ink box -- the cap height (plus any descender depth) of a constant
+  // set of plain reference glyphs, measured once here -- NOT on each line's own
+  // glyphs. Centring on per-line ink made the baseline drift whenever the glyphs
+  // changed: an accent (a, e, i, o, u with a tilde/acute, or n-tilde) reaches a
+  // pixel higher than a bare capital, which nudged that line down, so Spanish
+  // text appeared to jump as accented characters appeared (and flickered through
+  // the typewriter reveal). A fixed reference keeps the baseline identical for
+  // "Si" and "Si-acute"; accents and descenders simply extend into the cell's
+  // padding instead of moving the line. Reference is ASCII-only on purpose.
+  int ref_above = 0, ref_below = 0;
+  if (g_game_ok) {
+    static const char REF[] = "AHKMWXgjpqyў♪"; // caps -> cap height; g/j/p/q/y -> descender
+    line_ink_extents(REF, REF + sizeof(REF) - 1, rpx, &ref_above, &ref_below);
+    if (ref_above <= 0) ref_above = (rpx * 7) / 10; // fallback if refs somehow blank
+  }
 
   for (int li = 0; li < nlines; li++) {
     int lw = lwidths[li];
+    // Align each line within the content width (meas_w), not the padded W: the
+    // extra sh pixels are reserved on the right for the shadow, so right/centre
+    // alignment must not consume them or the shadow would spill off the edge.
     int pen_x = 0;
-    if (align_h == GFX_ALIGN_CENTER) pen_x = (W - lw) / 2;
-    else if (align_h == GFX_ALIGN_RIGHT) pen_x = W - lw;
+    if (align_h == GFX_ALIGN_CENTER) pen_x = (meas_w - lw) / 2;
+    else if (align_h == GFX_ALIGN_RIGHT) pen_x = meas_w - lw;
     if (pen_x < 0) pen_x = 0;
 
-    // Baseline within this line's cell. For a game font we centre the ACTUAL ink
-    // of the line (measured glyph extents) in the cell, so short labels with no
-    // descenders sit visually centred instead of riding high on reserved metric
-    // space. The shared font keeps its tuned metric baseline (it already fits).
+    // Baseline within this line's cell. For the game font we centre a FIXED ink
+    // box (ref_above/ref_below, computed once above) in the cell, so every line
+    // shares one baseline regardless of which glyphs it contains -- short labels
+    // still sit visually centred, but accents/descenders no longer shift the line
+    // (see the ref_above note above). The shared font keeps its tuned metric
+    // baseline (it already fits).
     int baseline;
     if (g_game_ok) {
-      int above = 0, below = 0;
-      line_ink_extents(ls[li], le[li], rpx, &above, &below);
-      int ink_h = above + below;
-      int cell_top = (line_h - ink_h) / 2;        // centre the ink in the cell
+      int cell_top = (line_h - (ref_above + ref_below)) / 2; // centre the ref box
       if (cell_top < 0) cell_top = 0;
-      baseline = y_off + li * line_h + cell_top + above;
+      baseline = y_off + li * line_h + cell_top + ref_above;
     } else {
       baseline = y_off + li * line_h + top_pad + asc_r;
     }
@@ -432,27 +523,11 @@ unsigned char *gfx_render_text_rgba(const char *text, int font_size,
       if (!gph) continue;
       const int gx = pen_x + gph->bitmap_left;
       const int gy = baseline - gph->bitmap_top;
-      for (unsigned ry = 0; ry < gph->rows; ry++) {
-        const int dy = gy + (int)ry;
-        if (dy < 0 || dy >= H) continue;
-        const uint8_t *srow = gph->buffer + (size_t)ry * gph->pitch;
-        for (unsigned rx = 0; rx < gph->width; rx++) {
-          const int dx = gx + (int)rx;
-          if (dx < 0 || dx >= W) continue;
-          const int cov = srow[rx];
-          if (!cov) continue;
-          // premultiplied RGBA8888 (byte order R,G,B,A)
-          const int af = cov * a / 255;       // final alpha
-          unsigned char *px4 = out + ((size_t)dy * W + dx) * 4;
-          // simple "over" against transparent: write the strongest coverage
-          if (af > px4[3]) {
-            px4[0] = (unsigned char)(r * af / 255);
-            px4[1] = (unsigned char)(g * af / 255);
-            px4[2] = (unsigned char)(b * af / 255);
-            px4[3] = (unsigned char)af;
-          }
-        }
-      }
+      // Shadow first (slid underneath, so it never touches text already drawn),
+      // then the glyph itself on top. Both go through one composite per pixel.
+      if (sh)
+        blit_glyph(out, W, H, gx + sh, gy + sh, gph, 0, 0, 0, shadow_a, 1);
+      blit_glyph(out, W, H, gx, gy, gph, r, g, b, a, 0);
       pen_x += (gph->advance_x >> 6);
     }
   }
