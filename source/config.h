@@ -21,7 +21,12 @@
 // Loose game assets (the APK's assets/ folder), served via the fake AAssetManager.
 #define ASSETS_DIR "assets"
 
-#define CONFIG_NAME "config.txt"
+#define CONFIG_NAME "config.ini"
+// Pre-INI format (flat "key value" lines, no section). read_config() migrates
+// from this once if config.ini doesn't exist yet, then renames it to
+// "config.txt.bak" so it's never read again -- config.ini is authoritative
+// from that point on.
+#define CONFIG_LEGACY_NAME "config.txt"
 #define LOG_NAME    "debug.log"
 
 #define DEBUG_LOG 0
@@ -32,7 +37,7 @@
 //   frametime.log -- a frame-time summary every ~5s (how many frames overran the
 //                    16.67ms vsync budget), to tell GPU/streaming hitches apart
 //                    from delta-time jitter.
-// Both files land next to config.txt in /switch/ct/.
+// Both files land next to config.ini in /switch/ct/.
 #define DEBUG_INSTR 0
 
 extern int screen_width;
