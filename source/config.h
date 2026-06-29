@@ -119,6 +119,11 @@ typedef struct {
   int cursor_fix;
   int remove_bilinear_filter;
   int remove_mobile_ui;
+  // Mod pack directory. Place .ctp files (ChronoMod-compatible Chrono Trigger
+  // Patch archives) here and they will be applied to resources.bin at startup
+  // without touching the original file. Paths are relative to the install
+  // folder (e.g. "mods" -> /switch/ct_nx/mods/). Set empty to disable.
+  char mods_dir[256];
 } Config;
 
 extern Config config;

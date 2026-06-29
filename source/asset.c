@@ -15,6 +15,7 @@
 
 #include "config.h"
 #include "asset.h"
+#include "modpack.h"
 #include "util.h"
 
 // An absolute path: a libnx device path ("sdmc:/...") or leading '/'. cocos only
@@ -67,17 +68,32 @@ int asset_open_fd(const char *name, int64_t *out_off, int64_t *out_len) {
 }
 
 // ---------------------------------------------------------------------------
-// AAsset: we always back assets with a buffered FILE* opened from ASSETS_DIR.
-// The big archives (resources.bin, *.dat) issue many small reads, so a large
-// stream buffer keeps the per-read fsdev round-trips down.
+// AAsset: backed by either a buffered FILE* (normal case) or a memory buffer
+// (patched resources.bin when .ctp mods are present).
+//
+// When mem != NULL the asset is memory-backed: f is NULL, mem owns the buffer,
+// reads/seeks operate on mem[pos..pos+size-1].  The whole pointer is unused in
+// this mode (mem already IS the whole buffer; getBuffer() just returns mem).
+//
+// The big archives (resources.bin, *.dat) issue many small reads, so the FILE*
+// path uses a large stream buffer to keep per-read fsdev round-trips down.
 // ---------------------------------------------------------------------------
 
 struct CtAsset {
-  FILE *f;
-  int64_t size;
-  int64_t pos;
-  uint8_t *whole;   // lazily materialised for AAsset_getBuffer
+  FILE    *f;
+  int64_t  size;
+  int64_t  pos;
+  uint8_t *whole;  // lazily materialised for AAsset_getBuffer (FILE* path only)
+  uint8_t *mem;    // non-NULL => memory-backed (patched resources.bin)
 };
+
+// ---------------------------------------------------------------------------
+// Patched resources.bin cache: built once on first open, reused thereafter.
+// The engine opens resources.bin exactly once at startup so this is fine.
+// ---------------------------------------------------------------------------
+static uint8_t *s_patched_buf  = NULL;
+static size_t   s_patched_size = 0;
+static int      s_patch_tried  = 0; // 1 = already attempted (even if no patch)
 
 void *AAssetManager_fromJava_fake(void *env, void *mgr) {
   (void)env; (void)mgr;
@@ -89,11 +105,32 @@ void *AAssetManager_open_fake(void *mgr, const char *path, int mode) {
   char real[1024];
   resolve(real, sizeof(real), path);
 
+  // Intercept resources.bin: if mod packs are present, serve the patched copy.
+  // We check for the bare filename so the intercept works regardless of how the
+  // engine spells the path (with or without leading "assets/").
+  const char *basename = strrchr(real, '/');
+  basename = basename ? basename + 1 : real;
+  if (strcmp(basename, "resources.bin") == 0) {
+    if (!s_patch_tried) {
+      s_patch_tried = 1;
+      modpack_get_patched_resources(real, &s_patched_buf, &s_patched_size);
+    }
+    if (s_patched_buf) {
+      CtAsset *a = (CtAsset *)calloc(1, sizeof(*a));
+      if (!a) return NULL;
+      a->mem  = s_patched_buf;
+      a->size = (int64_t)s_patched_size;
+      a->pos  = 0;
+      return a;
+    }
+    // No patch (no mods or no match) -- fall through to normal FILE* open.
+  }
+
   FILE *f = fopen(real, "rb");
   if (!f)
     return NULL;
 
-  CtAsset *a = calloc(1, sizeof(*a));
+  CtAsset *a = (CtAsset *)calloc(1, sizeof(*a));
   if (!a) { fclose(f); return NULL; }
 
   // a generous buffer; archives are read in long sequential bursts
@@ -111,14 +148,27 @@ void AAsset_close_fake(void *asset) {
     return;
   if (a->f)
     fclose(a->f);
+  // mem-backed: s_patched_buf is kept alive for the lifetime of the process
+  // (the engine may open resources.bin more than once if it reinitialises).
+  // Do NOT free a->mem here.
   free(a->whole);
   free(a);
 }
 
 int AAsset_read_fake(void *asset, void *buf, size_t count) {
   CtAsset *a = asset;
-  if (!a || !a->f)
-    return -1;
+  if (!a) return -1;
+
+  if (a->mem) {
+    int64_t avail = a->size - a->pos;
+    if (avail <= 0) return 0;
+    if ((int64_t)count > avail) count = (size_t)avail;
+    memcpy(buf, a->mem + a->pos, count);
+    a->pos += (int64_t)count;
+    return (int)count;
+  }
+
+  if (!a->f) return -1;
   size_t n = fread(buf, 1, count, a->f);
   a->pos += (int64_t)n;
   return (int)n;
@@ -130,8 +180,20 @@ long AAsset_seek_fake(void *asset, long off, int whence) {
 
 int64_t AAsset_seek64_fake(void *asset, int64_t off, int whence) {
   CtAsset *a = asset;
-  if (!a || !a->f)
-    return -1;
+  if (!a) return -1;
+
+  if (a->mem) {
+    int64_t newpos;
+    if      (whence == SEEK_SET) newpos = off;
+    else if (whence == SEEK_CUR) newpos = a->pos + off;
+    else if (whence == SEEK_END) newpos = a->size + off;
+    else return -1;
+    if (newpos < 0 || newpos > a->size) return -1;
+    a->pos = newpos;
+    return a->pos;
+  }
+
+  if (!a->f) return -1;
   if (fseek(a->f, (long)off, whence) != 0)
     return -1;
   a->pos = (int64_t)ftell(a->f);
@@ -158,13 +220,18 @@ int64_t AAsset_getRemainingLength64_fake(void *asset) {
   return a ? (a->size - a->pos) : 0;
 }
 
-// some cocos paths memory-map small assets; materialise the whole file once.
+// For memory-backed assets, the buffer IS the whole contents -- return it
+// directly.  For FILE*-backed assets, materialise as before.
 const void *AAsset_getBuffer_fake(void *asset) {
   CtAsset *a = asset;
-  if (!a || !a->f)
-    return NULL;
+  if (!a) return NULL;
+
+  if (a->mem)
+    return a->mem;
+
+  if (!a->f) return NULL;
   if (!a->whole) {
-    a->whole = malloc(a->size ? (size_t)a->size : 1);
+    a->whole = (uint8_t *)malloc(a->size ? (size_t)a->size : 1);
     if (!a->whole)
       return NULL;
     long save = ftell(a->f);
@@ -202,7 +269,7 @@ struct CtAssetDir {
 
 void *AAssetManager_openDir_fake(void *mgr, const char *dir) {
   (void)mgr;
-  CtAssetDir *ad = calloc(1, sizeof(*ad));
+  CtAssetDir *ad = (CtAssetDir *)calloc(1, sizeof(*ad));
   if (!ad)
     return NULL;
   resolve(ad->base, sizeof(ad->base), dir ? dir : "");

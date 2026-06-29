@@ -34,7 +34,8 @@
   CONFIG_VAR_FLOAT(text_shadow_scale); \
   CONFIG_VAR_INT(cursor_fix); \
   CONFIG_VAR_INT(remove_bilinear_filter); \
-  CONFIG_VAR_INT(remove_mobile_ui);
+  CONFIG_VAR_INT(remove_mobile_ui); \
+  CONFIG_VAR_STR(mods_dir);
 
 Config config;
 
@@ -82,6 +83,7 @@ static void set_defaults(void) {
   config.cursor_fix = 1;           // keep selected text WHITE, dark highlight
   config.remove_bilinear_filter = 1; // force GL_NEAREST (pixel-perfect filtering)
   config.remove_mobile_ui = 1;     // hide touch-overlay buttons
+  strlcpy(config.mods_dir, "mods", sizeof(config.mods_dir)); // .ctp mod packs folder
 }
 
 // One-time migration from the old flat "key value" config.txt, for anyone
