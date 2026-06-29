@@ -12,6 +12,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <errno.h>
+#include <dirent.h>
 #include <EGL/egl.h>
 #include <switch.h>
 #include <SDL2/SDL.h>
@@ -558,15 +560,109 @@ int main(void) {
   jni_init();
   thiz = jni_make_object("AppActivity");
 
-  // writable / save directory = the game directory (CWD)
+  // writable / save directory = <game directory (CWD)>/saves
+  //
+  // Previously this was the bare CWD, so save files (common.bin, the cocos2d
+  // prefs file, etc.) landed directly in /switch/ct/ alongside config.ini,
+  // debug.log, and everything else. Saves now live in their own subfolder
+  // next to mods/, so the top-level directory stays tidy.
+  //
+  // Pre-existing saves from the old (bare-CWD) location are migrated
+  // automatically, once, the first time this runs -- see the migration
+  // block right after jni_set_writable_path() below.
   static char wdir[512];
-  if (getcwd(wdir, sizeof(wdir)) && wdir[0]) {
-    size_t n = strlen(wdir);
-    if (n > 1 && wdir[n - 1] == '/') wdir[n - 1] = 0;
+  char base[512];
+  if (getcwd(base, sizeof(base)) && base[0]) {
+    size_t n = strlen(base);
+    if (n > 1 && base[n - 1] == '/') base[n - 1] = 0;
   } else {
-    strcpy(wdir, ".");
+    strcpy(base, ".");
   }
+
+  int wrote = snprintf(wdir, sizeof(wdir), "%s/saves", base);
+  if (wrote <= 0 || (size_t)wrote >= sizeof(wdir)) {
+    // Path too long to fit -- extremely unlikely, but fall back to the
+    // un-suffixed base dir rather than use a truncated/garbage path.
+    strlcpy(wdir, base, sizeof(wdir));
+  } else if (mkdir(wdir, 0777) != 0 && errno != EEXIST) {
+    // Couldn't create saves/ (read-only fs, permissions, etc.) -- fall back
+    // to the original behaviour (save directly in CWD) rather than risk the
+    // engine writing into a directory that doesn't exist.
+    debugPrintf("main: mkdir('%s') failed (errno=%d) -- using '%s' instead\n",
+                wdir, errno, base);
+    strlcpy(wdir, base, sizeof(wdir));
+  }
+
   jni_set_writable_path(wdir);
+
+  // One-time migration: move pre-existing saves from the old location
+  // (bare CWD) into saves/, if they haven't been migrated already.
+  //
+  // Only files matching the engine's known save-file naming are moved:
+  //   Chrono_sp_<N>_0.dat  -- per-slot save data (N can be any integer)
+  //   meta.bin             -- save-slot metadata/index
+  //   common.bin           -- common/shared save data
+  // Everything else in the old directory (config.ini, debug.log, the .so
+  // files, ChronoType.ttf, mods/, assets/, etc.) is left untouched.
+  //
+  // Skipped entirely if wdir == base (mkdir of saves/ failed above, so
+  // saves are staying in the old location anyway -- nothing to migrate).
+  if (strcmp(wdir, base) != 0) {
+    DIR *mig_check = opendir(wdir);
+    int saves_already_present = 0;
+    if (mig_check) {
+      struct dirent *me;
+      while ((me = readdir(mig_check)) != NULL) {
+        if (!strcmp(me->d_name, "common.bin") || !strcmp(me->d_name, "meta.bin") ||
+            !strncmp(me->d_name, "Chrono_sp_", 10)) {
+          saves_already_present = 1;
+          break;
+        }
+      }
+      closedir(mig_check);
+    }
+
+    if (!saves_already_present) {
+      DIR *old_dir = opendir(base);
+      if (old_dir) {
+        struct dirent *e;
+        int moved = 0, skipped = 0;
+        while ((e = readdir(old_dir)) != NULL) {
+          int is_save_file =
+              !strcmp(e->d_name, "common.bin") ||
+              !strcmp(e->d_name, "meta.bin") ||
+              !strncmp(e->d_name, "Chrono_sp_", 10);
+          if (!is_save_file) continue;
+
+          char old_path[600], new_path[600];
+          snprintf(old_path, sizeof(old_path), "%s/%s", base, e->d_name);
+          snprintf(new_path, sizeof(new_path), "%s/%s", wdir, e->d_name);
+
+          struct stat st;
+          if (stat(new_path, &st) == 0) {
+            // Something's already there (shouldn't happen given the guard
+            // above) -- don't clobber it, just leave the old file in place.
+            debugPrintf("main: migrate skip (dest exists): %s\n", e->d_name);
+            skipped++;
+            continue;
+          }
+
+          if (rename(old_path, new_path) == 0) {
+            moved++;
+          } else {
+            debugPrintf("main: migrate failed for %s (errno=%d)\n",
+                        e->d_name, errno);
+            skipped++;
+          }
+        }
+        closedir(old_dir);
+        if (moved || skipped)
+          debugPrintf("main: save migration -- moved %d, skipped %d\n",
+                      moved, skipped);
+      }
+    }
+  }
+
   {
     char prefs_path[600];
     snprintf(prefs_path, sizeof(prefs_path), "%s/Cocos2dxPrefsFile.txt", wdir);
