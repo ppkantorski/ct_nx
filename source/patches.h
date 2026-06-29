@@ -336,10 +336,12 @@ static void apply_bilinear_patches(so_module *mod) {
 
   for (int i = 0; i < mod->num_syms; i++) {
     const char *nm = mod->dynstrtab + mod->syms[i].st_name;
-    if (__builtin_strcmp(nm, "_ZN7cocos2d9Texture2D15initWithMipmaps") == 0) {
+    if (__builtin_strncmp(nm, "_ZN7cocos2d9Texture2D15initWithMipmaps",
+                          sizeof("_ZN7cocos2d9Texture2D15initWithMipmaps") - 1) == 0) {
       iwm_base = (uintptr_t)mod->load_base + mod->syms[i].st_value;
       iwm_size = mod->syms[i].st_size;
-    } else if (__builtin_strcmp(nm, "_ZN7cocos2d9Texture2D25setAntiAliasTexParameters") == 0) {
+    } else if (__builtin_strncmp(nm, "_ZN7cocos2d9Texture2D25setAntiAliasTexParameters",
+                                 sizeof("_ZN7cocos2d9Texture2D25setAntiAliasTexParameters") - 1) == 0) {
       aap_base = (uintptr_t)mod->load_base + mod->syms[i].st_value;
       aap_size = mod->syms[i].st_size;
     }
