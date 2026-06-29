@@ -183,6 +183,70 @@ static void gl_free(GLVid *g) {
   glUseProgram(0);
 }
 
+// --- last-frame hold ---------------------------------------------------------
+// After normal playback ends, stash the final rendered frame so the main render
+// loop can re-present it while the engine's scene transition runs, preventing
+// the black-screen gap between movie end and the engine's first post-movie draw.
+//
+// Flow:
+//   movie_play() ends  -> stashes last frame in g_hold_*
+//   g_video_cb(COMPLETED) fires  -> engine sets its 'video done' flag
+//   movie_hold_last_frame(N)  -> arms g_hold_frames with N; returns immediately
+//   main.c render loop: calls movie_post_render() instead of eglSwapBuffers
+//     -> presents hold frame; on last frame frees GL resources + invalidates
+//   Normal rendering resumes once g_hold_frames reaches 0.
+
+static GLVid    g_hold_gl;
+static int      g_hold_gl_ok  = 0;
+static int      g_hold_vw     = 0;
+static int      g_hold_vh     = 0;
+static uint8_t *g_hold_rgba   = NULL;
+static int      g_hold_frames = 0; // frames remaining to present via post_render
+static int      g_completion_flag = 0; // set when movie ends normally; cleared by take
+
+// Arm the hold counter. Call AFTER firing VIDEO_EVENT_COMPLETED so the engine
+// flag is already set before the first post-render swap happens.
+void movie_hold_last_frame(int frames) {
+  if (!g_hold_gl_ok || !g_hold_rgba || frames <= 0) return;
+  g_hold_frames = frames;
+}
+
+// Called from the main render loop in place of eglSwapBuffers.
+// Returns 1 if it handled the swap (caller must NOT call eglSwapBuffers).
+// Returns 0 if no hold is active (caller swaps normally).
+int movie_post_render(EGLDisplay dpy, EGLSurface sfc) {
+  if (!g_hold_gl_ok || !g_hold_rgba || g_hold_frames <= 0) return 0;
+
+  gl_draw(&g_hold_gl, g_hold_rgba, g_hold_vw, g_hold_vh);
+  if (dpy != EGL_NO_DISPLAY && sfc != EGL_NO_SURFACE)
+    eglSwapBuffers(dpy, sfc);
+
+  g_hold_frames--;
+  if (g_hold_frames <= 0) {
+    // All hold frames consumed: release GL resources and restore engine state.
+    gl_free(&g_hold_gl);
+    if (g_gl_invalidate) g_gl_invalidate();
+    free(g_hold_rgba);
+    g_hold_rgba  = NULL;
+    g_hold_gl_ok = 0;
+    g_hold_frames = 0;
+  }
+  return 1;
+}
+
+// Returns 1 exactly once after a movie completes normally, then resets.
+// main.c polls this each frame to know when to inject a synthetic BACK key.
+int movie_take_completion_flag(void) {
+  if (!g_completion_flag) return 0;
+  g_completion_flag = 0;
+  return 1;
+}
+
+// Called from jni_fake.c after a movie finishes normally (not skipped).
+void movie_signal_completion(void) {
+  g_completion_flag = 1;
+}
+
 // --- playback ---------------------------------------------------------------
 
 static int skip_pressed(PadState *pad) {
@@ -309,9 +373,47 @@ int movie_play(const char *name) {
     av_packet_unref(pkt);
   }
 
+  // Flush the video decoder: H.264 buffers several frames internally.
+  // Without this drain the last few frames (typically the fade-to-black)
+  // are never presented, leaving the screen black until the engine repaints.
+  if (!stop && vdec && gl_ok) {
+    avcodec_send_packet(vdec, NULL); // NULL packet = flush signal
+    while (avcodec_receive_frame(vdec, frame) == 0) {
+      uint8_t *dst[4] = { rgba, NULL, NULL, NULL };
+      int dstst[4] = { vw * 4, 0, 0, 0 };
+      sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize, 0, vh, dst, dstst);
+      double pts = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
+                     ? (double)frame->best_effort_timestamp * tb_v : 0.0;
+      for (int spin = 0; spin < 2000 && !stop; spin++) {
+        double clk = (aidx >= 0)
+                       ? (double)opensles_movie_samples_played() / (double)dev_rate
+                       : (double)(armGetSystemTick() - t0) / tickHz;
+        if (clk + 0.001 >= pts) break;
+        svcSleepThread(2000000ull);
+        if (skip_pressed(&pad)) stop = 1;
+      }
+      if (!stop && skip_pressed(&pad)) stop = 1;
+      if (!stop) { gl_draw(&gl, rgba, vw, vh); gl_present(); }
+    }
+  }
+
 done:
+  // If playback completed normally (not skipped), stash the last frame so
+  // movie_post_render() can re-present it from the main render loop while the
+  // engine runs its scene transition. gl_free and g_gl_invalidate are deferred
+  // to movie_post_render() in that case; on skip we clean up immediately.
+  g_hold_gl_ok = 0;
+  if (!stop && gl_ok && rgba && vw > 0 && vh > 0) {
+    g_hold_gl   = gl;
+    g_hold_vw   = vw;
+    g_hold_vh   = vh;
+    g_hold_rgba = rgba;
+    rgba        = NULL; // ownership transferred -- don't free below
+    gl_ok       = 0;    // suppress gl_free below
+    g_hold_gl_ok = 1;
+  }
   if (gl_ok) gl_free(&gl);
-  if (g_gl_invalidate) g_gl_invalidate(); // we changed GL state behind cocos's back
+  if (!g_hold_gl_ok && g_gl_invalidate) g_gl_invalidate();
   opensles_movie_end();
   if (pkt) av_packet_free(&pkt);
   if (frame) av_frame_free(&frame);

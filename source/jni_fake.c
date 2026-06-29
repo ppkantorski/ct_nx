@@ -459,7 +459,9 @@ static int create_text_bitmap(va_list va) {
 // report COMPLETED so the engine's PlayMovieScene continues.
 // ---------------------------------------------------------------------------
 
-#define VIDEO_EVENT_COMPLETED 3
+// Confirmed from VideoPlayer::onPlayEvent disassembly: CMP w1,#1000 is the
+// COMPLETED check. The standard cocos2d value (3) is wrong for this build.
+#define VIDEO_EVENT_COMPLETED 1000
 static int g_video_next_index = 0;
 static char g_video_url[512];
 
@@ -481,7 +483,16 @@ static void video_dispatch_void(const char *name, va_list va) {
     int idx = va_arg(va, int);
     if (g_video_url[0])
       movie_play(g_video_url); // blocking: runs to clip end or skip (A/B/+)
+    // Fire COMPLETED so the engine's VideoPlayer::onPlayEvent(1000) sets its
+    // internal 'done' flag. Arm the hold so movie_post_render() keeps the last
+    // frame visible. Set the completion flag so main.c injects a synthetic BACK
+    // key on the next iteration -- PlayMovieScene::onKeyboardPressed(KEY_BACK=6)
+    // calls SceneManager::NextScene(-1), which is the auto-advance path that the
+    // engine expects (PlayMovieScene::update never fires it because our
+    // InvaildDevice::getKeyRelease always returns 0).
     if (g_video_cb) g_video_cb(fake_env, NULL, idx, VIDEO_EVENT_COMPLETED);
+    movie_hold_last_frame(6);
+    movie_signal_completion(); // arms the flag; main.c injects BACK next frame
     return;
   }
   (void)va; // removeVideoWidget/setVideoRect/seek/visible/etc: no-op

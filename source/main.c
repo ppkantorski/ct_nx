@@ -652,8 +652,25 @@ int main(void) {
     force_language(); // keep mCurrentLanguage pinned for any direct readers
                       // (getCurrentLanguage/getLocalizeResourcePath are patched)
 
+    // PlayMovieScene::update() auto-advances only when InvaildDevice::getKeyRelease
+    // returns a non-zero bit -- but our stub always returns 0, so the scene never
+    // transitions by itself. Instead, after movie_hold_last_frame drains, we inject
+    // a synthetic BACK press (AK_BACK=4 -> cocos KeyCode 6 = KEY_ESCAPE/KEY_BACK),
+    // which is exactly what PlayMovieScene::onKeyboardPressed checks before calling
+    // SceneManager::NextScene(-1). This runs BEFORE nativeRender so the key event
+    // is processed inside the engine's normal frame, safely outside the init() stack.
+    if (movie_take_completion_flag() && e_keyEvent) {
+      e_keyEvent(fake_env, thiz, AK_BACK, 1); // key down
+      e_keyEvent(fake_env, thiz, AK_BACK, 0); // key up
+    }
+
     e_nativeRender(fake_env);
-    eglSwapBuffers(s_display, s_surface);
+    // If a movie just finished, movie_post_render presents the last video frame
+    // in place of whatever the engine drew this cycle (which may be black during
+    // the scene transition). Once the hold count is exhausted it restores GL
+    // state and hands control back. On normal frames it's a no-op (returns 0).
+    if (!movie_post_render(s_display, s_surface))
+      eglSwapBuffers(s_display, s_surface);
 
     jni_ime_service(); // show swkbd for a pending EditBox, outside nativeRender
 
