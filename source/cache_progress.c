@@ -176,15 +176,36 @@ static int ensure_ready(void) {
   return g.ready;
 }
 
-/* (Re-)rasterises "Caching mods... NN%" into g.text_tex via the same
- * system-font path the engine's own labels use, only when the displayed
- * percentage has actually changed. */
+/* "Caching mods... NN%" translated into whatever language the engine itself
+ * is about to come up in -- same nine codes/aliases main.c's lang_index()
+ * recognises for DeviceInfo::mCurrentLanguage, so the splash always matches
+ * resources.bin's Localize/<code>/ set rather than always reading English.
+ * %d stays a plain printf conversion in every string; only the wording
+ * around it changes. */
+static const char *caching_label_fmt(void) {
+  const char *l = config.language;
+  if (!strcmp(l, "ja")) return "MODをキャッシュ中... %d%%";
+  if (!strcmp(l, "de")) return "Mods werden zwischengespeichert... %d%%";
+  if (!strcmp(l, "it")) return "Memorizzazione delle mod in cache... %d%%";
+  if (!strcmp(l, "es")) return "Almacenando mods en caché... %d%%";
+  if (!strcmp(l, "fr")) return "Mise en cache des mods... %d%%";
+  if (!strcmp(l, "zh") || !strcmp(l, "zh-Hans") || !strcmp(l, "zh_CN"))
+    return "正在缓存模组... %d%%";
+  if (!strcmp(l, "zh-Hant") || !strcmp(l, "zh_TW"))
+    return "正在快取模組... %d%%";
+  if (!strcmp(l, "ko")) return "모드 캐싱 중... %d%%";
+  return "Caching mods... %d%%"; // "en" and unrecognised codes
+}
+
+/* (Re-)rasterises the caching label into g.text_tex via the same system-font
+ * path the engine's own labels use, only when the displayed percentage has
+ * actually changed. */
 static void update_label(int percent) {
   if (percent == g.last_percent) return;
   g.last_percent = percent;
 
-  char buf[40];
-  snprintf(buf, sizeof(buf), "Caching mods... %d%%", percent);
+  char buf[64];
+  snprintf(buf, sizeof(buf), caching_label_fmt(), percent);
 
   int font_px = (int)(30.0f * ui_scale() + 0.5f);
   if (font_px < 14) font_px = 14;
