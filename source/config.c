@@ -35,6 +35,8 @@
   CONFIG_VAR_INT(cursor_fix); \
   CONFIG_VAR_INT(remove_bilinear_filter); \
   CONFIG_VAR_INT(remove_mobile_ui); \
+  CONFIG_VAR_INT(native_controller); \
+  CONFIG_VAR_INT(controller_glyphs); \
   CONFIG_VAR_STR(mods_dir);
 
 Config config;
@@ -83,6 +85,8 @@ static void set_defaults(void) {
   config.cursor_fix = 1;           // keep selected text WHITE, dark highlight
   config.remove_bilinear_filter = 1; // force GL_NEAREST (pixel-perfect filtering)
   config.remove_mobile_ui = 1;     // hide touch-overlay buttons
+  config.native_controller = 1;    // native controller input -> Switch-button prompts
+  config.controller_glyphs = 1;    // force <BTN_*> dialogue tags to the pad glyph set
   strlcpy(config.mods_dir, "mods", sizeof(config.mods_dir)); // .ctp mod packs folder
 }
 

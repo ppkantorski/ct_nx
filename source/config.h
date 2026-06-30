@@ -119,6 +119,19 @@ typedef struct {
   int cursor_fix;
   int remove_bilinear_filter;
   int remove_mobile_ui;
+  // Input / controller:
+  //   native_controller -- 1 = drive the engine purely through its native
+  //                        controller path (cocos2d Controller -> GameController),
+  //                        so on-screen prompts and <BTN_*> dialogue tags show
+  //                        Switch buttons. 0 = also emit keyboard key events
+  //                        (legacy compat; the engine then reverts to
+  //                        keyboard-style prompts whenever a key event is seen).
+  //   controller_glyphs -- 1 = force in-message <BTN_*> tags to the controller
+  //                        glyph set (honours the A/B-swap setting) regardless of
+  //                        the engine's own last-input-device auto-selection.
+  //                        Belt-and-braces with native_controller; harmless on.
+  int native_controller;
+  int controller_glyphs;
   // Mod pack directory. Place .ctp files (ChronoMod-compatible Chrono Trigger
   // Patch archives) here and they will be applied to resources.bin at startup
   // without touching the original file. Paths are relative to the install

@@ -324,6 +324,64 @@ static const PatchEntry g_mobile_ui_patches[] = {
 };
 
 // ---------------------------------------------------------------------------
+// 4.  controller_glyphs
+//
+//     In-message <BTN_*> tags (CONF/DASH/MENU/WARP/L/R) are substituted at
+//     render time from one of two .bss glyph-string tables, chosen by the
+//     message-text builder at 0x5fea40:
+//
+//       and  x8, w20, #3                  ; w20 = ChronoCanvas[0x10b2c] (A/B-swap cfg)
+//       umaddl x8, w8, #0x90, 0xbf3798    ; x8 = CONTROLLER table + (swap&3)*0x90
+//       add  x9, .., #0x9d8               ; x9 = KEYBOARD table 0xbf39d8
+//       tst  w0, #1                       ; w0 = "last input was a key" (pad? bit)
+//       csel x20, x8, x9, ne              ; pick keyboard when a key was last seen
+//
+//     With native_controller on this already resolves to the controller table,
+//     but forcing the select guarantees Switch-button glyphs even on the very
+//     first frame or in keyboard-compat mode. csel -> mov x20,x8 (controller).
+//     The (swap&3) index is preserved, so the A/B-swap setting is still honoured.
+// ---------------------------------------------------------------------------
+static const PatchEntry g_glyph_patches[] = {
+  P_RAW(0x5fea50, 0x9a891114, 0xaa0803f4,
+    "MsgText <BTN_*> tags: force controller glyph table (csel x20,x8,x9,ne -> mov x20,x8)"),
+
+  // ---------------------------------------------------------------------
+  // <BTN_L>/<BTN_R> glyph text: "[LB]"/"[RB]" -> "[L]"/"[R]"
+  //
+  // The controller-glyph builder at 0x5fce6c constructs two inline UTF-8
+  // strings via mov/movk into x12/x13, then stores them (stur x12/x13) into
+  // EVERY swap-variant slot of the L/R entries -- one computation, many
+  // copies, confirmed by tracing the stores across all 4 variants. The
+  // strings are Xbox/generic-pad bumper labels, not Switch shoulder labels:
+  //
+  //   x12 = e3 80 90 52 42 e3 80 91  = U+3010 'R' 'B' U+3011  ([RB])  <BTN_R>
+  //   x13 = e3 80 90 4c 42 e3 80 91  = U+3010 'L' 'B' U+3011  ([LB])  <BTN_L>
+  //
+  // R and L are directionally correct (R shows R-content, L shows
+  // L-content) -- this is a labelling fix, not an input-swap fix. Drop the
+  // 'B' byte from each (8 bytes -> 7) and shift the closing bracket down;
+  // the libc++ short-string size byte (w16, shared by both) goes from
+  // 0x10 (size 8) to 0x0e (size 7) to match:
+  //
+  //   x12 -> e3 80 90 52 e3 80 91        = U+3010 'R' U+3011      ([R])
+  //   x13 -> e3 80 90 4c e3 80 91        = U+3010 'L' U+3011      ([L])
+  //
+  // Only the byte4..7 movk's change (byte0..3 are identical between the
+  // "RB"/"R" and "LB"/"L" forms, so those instructions are untouched).
+  // ---------------------------------------------------------------------
+  P_RAW(0x5fcea4, 0xf2dc684c, 0xf2d01c6c,
+    "<BTN_R> glyph: movk x12,#0xe342,lsl32 -> #0x80e3,lsl32 (drop 'B')"),
+  P_RAW(0x5fced0, 0xf2f2300c, 0xf2e0122c,
+    "<BTN_R> glyph: movk x12,#0x9180,lsl48 -> #0x0091,lsl48 (shift ])"),
+  P_RAW(0x5fcea8, 0xf2dc684d, 0xf2d01c6d,
+    "<BTN_L> glyph: movk x13,#0xe342,lsl32 -> #0x80e3,lsl32 (drop 'B')"),
+  P_RAW(0x5fced4, 0xf2f2300d, 0xf2e0122d,
+    "<BTN_L> glyph: movk x13,#0x9180,lsl48 -> #0x0091,lsl48 (shift ])"),
+  P_RAW(0x5fcecc, 0x52800210, 0x528001d0,
+    "<BTN_L>/<BTN_R> glyph: mov w16,#0x10 -> #0x0e (shared size byte 8->7)"),
+};
+
+// ---------------------------------------------------------------------------
 // The bilinear patches use pattern-search within the function body (as the
 // Python script does) rather than hard-coded relative offsets, because the
 // compiler may arrange the instructions differently. We provide a dedicated
@@ -413,6 +471,11 @@ static inline void apply_game_patches(so_module *mod) {
   if (config.remove_mobile_ui) {
     debugPrintf("patches: applying remove_mobile_ui\n");
     apply_patches(mod, g_mobile_ui_patches, PATCH_COUNT(g_mobile_ui_patches));
+  }
+
+  if (config.controller_glyphs) {
+    debugPrintf("patches: applying controller_glyphs\n");
+    apply_patches(mod, g_glyph_patches, PATCH_COUNT(g_glyph_patches));
   }
 }
 

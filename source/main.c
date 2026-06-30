@@ -289,6 +289,13 @@ static void *thiz; // fake MainActivity instance handed to the JNI entry points
 #define AK_DCENTER 23
 #define AK_ENTER  66
 #define AK_MENU   82
+// Letter keys the engine binds to its non-confirm/cancel actions on the
+// keyboard path (used only in keyboard-compat mode). The engine's own glyph
+// tables reveal these bindings: MENU=V, WARP=B, L=G, R=H.
+#define AK_V      50   // KEYCODE_V -> MENU action
+#define AK_B      30   // KEYCODE_B -> WARP action
+#define AK_G      35   // KEYCODE_G -> L action
+#define AK_H      36   // KEYCODE_H -> R action
 #define AK_NONE   (-1)
 
 // cocos2d::Controller::Key enum values (CCController.h, 3.14.1)
@@ -306,17 +313,26 @@ typedef struct {
   int cc_key;     // controller path cocos key
 } KeyMap;
 
-// Nintendo-native: A (right) confirms, B (bottom) cancels.
+// Native controller layout. The engine (GameController / nsInput) binds its
+// actions to cocos2d Controller::Key codes, and renders the matching on-screen
+// glyph per button, so we map each Switch button 1:1 to the cocos key the
+// engine expects -- this is what keeps the prompts showing real Switch buttons:
+//   A = confirm        B = cancel / dash
+//   Y = menu           X = warp / map        (the engine's own pad scheme,
+//   L/R = page-shift                          which is why MENU=BtnY, WARP=BtnX)
+// A/B/L/R match the DS/SNES layout exactly; only menu/warp sit on Y/X per the
+// engine's controller binding (so the glyph always matches the button pressed).
+// android_kc is emitted ONLY in keyboard-compat mode (native_controller == 0).
 static const KeyMap g_keymap[] = {
-  { HidNpadButton_A,     AK_ENTER,   CC_BTN_A },
-  { HidNpadButton_B,     AK_BACK,    CC_BTN_B },
-  { HidNpadButton_X,     AK_NONE,    CC_BTN_X },
-  { HidNpadButton_Y,     AK_NONE,    0 },        // unused (pause menu moved to +)
-  { HidNpadButton_L,     AK_NONE,    CC_L_SHOULDER },
-  { HidNpadButton_R,     AK_NONE,    CC_R_SHOULDER },
+  { HidNpadButton_A,     AK_ENTER,   CC_BTN_A },       // confirm
+  { HidNpadButton_B,     AK_BACK,    CC_BTN_B },       // cancel / dash
+  { HidNpadButton_X,     AK_B,       CC_BTN_X },       // warp / map
+  { HidNpadButton_Y,     AK_V,       CC_BTN_Y },       // menu
+  { HidNpadButton_L,     AK_G,       CC_L_SHOULDER },  // page / shift left
+  { HidNpadButton_R,     AK_H,       CC_R_SHOULDER },  // page / shift right
   { HidNpadButton_ZL,    AK_NONE,    CC_L_TRIGGER },
   { HidNpadButton_ZR,    AK_NONE,    CC_R_TRIGGER },
-  { HidNpadButton_Plus,  AK_MENU,    CC_BTN_Y },  // + opens the pause menu (was Y)
+  { HidNpadButton_Plus,  AK_MENU,    CC_BTN_START },   // pause / system menu
   { HidNpadButton_Minus, AK_NONE,    CC_BTN_SELECT },
   { HidNpadButton_StickL, AK_NONE,   CC_L_THUMB },
   { HidNpadButton_StickR, AK_NONE,   CC_R_THUMB },
@@ -332,7 +348,11 @@ static int g_prev[NUM_KEYMAP];
 
 static void send_button(int idx, int pressed) {
   const KeyMap *k = &g_keymap[idx];
-  if (k->android_kc != AK_NONE && e_keyEvent)
+  // Keyboard path: only when native_controller is OFF. The engine flips to
+  // keyboard-style glyphs the moment it sees a key event, so suppressing these
+  // is what keeps it in native controller mode (real Switch-button prompts).
+  // Name entry is unaffected -- it goes through the IME path, not these events.
+  if (!config.native_controller && k->android_kc != AK_NONE && e_keyEvent)
     e_keyEvent(fake_env, thiz, k->android_kc, pressed);
   if (e_ctrlButton && k->cc_key) // cc_key 0 = no controller mapping
     e_ctrlButton(fake_env, thiz, g_ctrl_name, 0, k->cc_key, pressed, pressed ? 1.0f : 0.0f, 0);
