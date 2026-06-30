@@ -200,9 +200,14 @@ static CachedGlyph *get_glyph_for_face(FT_Face face, uint32_t cp, int px, FT_UIn
   return c;
 }
 
-// pick the first face that has a glyph for cp, same fallback order as before
-// (game font, then each shared font, then a last-resort notdef face), and
-// return its cached/rendered glyph.
+// ---------------------------------------------------------------------------
+// pick the first face that has a glyph for cp (game font, then each shared
+// font, then a last-resort notdef face), and return its cached/rendered glyph.
+//
+// Note: in-message <BTN_*> tags (e.g. "(A)") are now plain ASCII produced by
+// the libchrono glyph patch, so they render through this normal path in
+// whatever face is already drawing the surrounding text -- no Private-Use
+// codepoints and no separate shared-font icon lookup is needed here anymore.
 static CachedGlyph *get_glyph(uint32_t cp, int px) {
   FT_Face face = NULL;
   FT_UInt hpx = 0;
@@ -255,9 +260,24 @@ static int measure_line(const char *s, const char *end, int px) {
 // reflect the glyphs really present, so we can centre the visible text rather
 // than the font's metric box (which reserves space for accents/descenders the
 // text may not use -- that reserved space is what pushed labels too high).
+//
+// *below is allowed to come out NEGATIVE. Normally a glyph's ink reaches at
+// least down to the font's own baseline (bot = rows - bitmap_top >= 0), but
+// some fonts (e.g. ChronoType.ttf, an SNES-style pixel font) bake in a small
+// gap so that even plain capitals stop short of the baseline -- their bottom
+// row sits a few pixels *above* it. That gap is proportional to the render
+// size (measured ~0.19*px for ChronoType at every size tested), not a fixed
+// pixel count, so it has to be measured per call rather than guessed as a
+// constant. If we clamped *below* at 0 here we'd silently overstate how tall
+// the reference ink box is for such fonts by exactly that gap, which is what
+// previously made the centred text sit visibly too high -- and by an amount
+// that grew or shrank with font_size, so no single fixed offset could ever
+// correct it across every text box in the game. Letting *below go negative
+// lets the caller's box shrink to the font's *real* measured ink span, so
+// centring is correct at every size with no per-font fudge factor needed.
 static void line_ink_extents(const char *s, const char *end, int px,
                              int *above, int *below) {
-  int a = 0, b = 0;
+  int a = 0, b = 0, have = 0;
   const char *p = s;
   while (p < end && *p) {
     uint32_t cp = utf8_next(&p);
@@ -265,9 +285,10 @@ static void line_ink_extents(const char *s, const char *end, int px,
     CachedGlyph *g = get_glyph(cp, px);
     if (!g || g->rows == 0) continue; // skip spaces/empties
     int top = g->bitmap_top;                                   // above baseline
-    int bot = (int)g->rows - top;                              // below baseline
-    if (top > a) a = top;
-    if (bot > b) b = bot;
+    int bot = (int)g->rows - top;                              // below baseline (may be < 0)
+    if (!have || top > a) a = top;
+    if (!have || bot > b) b = bot;
+    have = 1;
   }
   *above = a; *below = b;
 }
@@ -635,18 +656,24 @@ unsigned char *gfx_render_text_rgba(const char *text, int font_size,
     return NULL;
 
   // Stable vertical reference for the game-font path. Every line is centred on
-  // ONE fixed ink box -- the cap height (plus any descender depth) of a constant
-  // set of plain reference glyphs, measured once here -- NOT on each line's own
-  // glyphs. Centring on per-line ink made the baseline drift whenever the glyphs
-  // changed: an accent (a, e, i, o, u with a tilde/acute, or n-tilde) reaches a
-  // pixel higher than a bare capital, which nudged that line down, so Spanish
-  // text appeared to jump as accented characters appeared (and flickered through
-  // the typewriter reveal). A fixed reference keeps the baseline identical for
-  // "Si" and "Si-acute"; accents and descenders simply extend into the cell's
-  // padding instead of moving the line. Reference is ASCII-only on purpose.
+  // ONE fixed ink box -- the cap height (and however far these specific glyphs'
+  // ink actually reaches relative to the font's own baseline -- see
+  // line_ink_extents) of a constant set of plain reference glyphs, measured
+  // once here -- NOT on each line's own glyphs. Centring on per-line ink made
+  // the baseline drift whenever the glyphs changed: an accent (a, e, i, o, u
+  // with a tilde/acute, or n-tilde) reaches a pixel higher than a bare
+  // capital, which nudged that line down, so Spanish text appeared to jump as
+  // accented characters appeared (and flickered through the typewriter
+  // reveal). A fixed reference keeps the baseline identical for "Si" and
+  // "Si-acute"; accents and descenders simply extend into the cell's padding
+  // instead of moving the line. Reference is ASCII caps on purpose: most text
+  // in any given line has no true descender, so this represents the common
+  // case and rare descenders (g/j/p/q/y) just dip into the cell's padding
+  // rather than shifting every line's baseline for the sake of an infrequent
+  // glyph.
   int ref_above = 0, ref_below = 0;
   if (g_game_ok) {
-    static const char REF[] = "AHKMWXgjpqyў♪"; // caps -> cap height; g/j/p/q/y -> descender
+    static const char REF[] = "ABHTMW";
     line_ink_extents(REF, REF + sizeof(REF) - 1, rpx, &ref_above, &ref_below);
     if (ref_above <= 0) ref_above = (rpx * 7) / 10; // fallback if refs somehow blank
   }

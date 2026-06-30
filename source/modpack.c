@@ -71,6 +71,7 @@
 #include "modpack.h"
 #include "config.h"
 #include "util.h"
+#include "cache_progress.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -580,18 +581,19 @@ typedef struct {
   OverrideSlot *slots;       /* compact array of overrides only */
   int           slot_count;
   uint32_t      next_slot;   /* atomic work counter */
+  uint32_t      completed;   /* atomic count of finished slots (progress UI) */
   Mutex         mtx;
   int           failed;
 } CompressCtx;
 
-static void compress_worker(void *arg) {
-  CompressCtx *ctx = (CompressCtx *)arg;
-  while (1) {
-    uint32_t si = __atomic_fetch_add(&ctx->next_slot, 1, __ATOMIC_SEQ_CST);
-    if ((int)si >= ctx->slot_count) break;
-    OverrideSlot *s = &ctx->slots[si];
-    ArcEntry     *e = &ctx->entries[s->arc_idx];
-    if (!s->gz_buf) continue; /* pre-alloc failed; will be caught in assemble */
+/* Compresses a single claimed slot and records the result. Shared by
+ * compress_worker (t1/t2, runs to exhaustion) and compress_worker_batch
+ * (main thread, claims a bounded number at a time so it can interleave
+ * cache_progress_update() draws between batches). */
+static void compress_one(CompressCtx *ctx, uint32_t si) {
+  OverrideSlot *s = &ctx->slots[si];
+  ArcEntry     *e = &ctx->entries[s->arc_idx];
+  if (s->gz_buf) { /* pre-alloc failed; will be caught in assemble */
     uLong gz_len = gz_compress_into(e->override_data, (uLong)e->override_size,
                                     s->gz_buf, s->gz_cap);
     s->gz_len = gz_len;
@@ -601,9 +603,34 @@ static void compress_worker(void *arg) {
       mutexUnlock(&ctx->mtx);
     }
   }
+  __atomic_fetch_add(&ctx->completed, 1, __ATOMIC_SEQ_CST);
 }
 
-static uint8_t *arc_rebuild_threaded(Arc *a, size_t *out_size) {
+static void compress_worker(void *arg) {
+  CompressCtx *ctx = (CompressCtx *)arg;
+  while (1) {
+    uint32_t si = __atomic_fetch_add(&ctx->next_slot, 1, __ATOMIC_SEQ_CST);
+    if ((int)si >= ctx->slot_count) break;
+    compress_one(ctx, si);
+  }
+}
+
+/* Claims and processes at most max_items slots, then returns the number
+ * actually claimed (0 once the work is exhausted). Lets the main thread
+ * keep doing its third of the compression work while still getting back to
+ * the render loop regularly enough to redraw the progress splash. */
+static int compress_worker_batch(CompressCtx *ctx, int max_items) {
+  int n;
+  for (n = 0; n < max_items; n++) {
+    uint32_t si = __atomic_fetch_add(&ctx->next_slot, 1, __ATOMIC_SEQ_CST);
+    if ((int)si >= ctx->slot_count) break;
+    compress_one(ctx, si);
+  }
+  return n;
+}
+
+static uint8_t *arc_rebuild_threaded(Arc *a, size_t *out_size,
+                                      float *out_save_start_frac) {
   int n = a->entry_count;
 
   /* Build compact override slot array -- one slot per override entry only. */
@@ -630,6 +657,22 @@ static uint8_t *arc_rebuild_threaded(Arc *a, size_t *out_size) {
     si++;
   }
 
+  /* The splash's 0..1 range is split into three phases weighted by the byte
+   * volume each one actually has to move, not by slot/entry count -- a
+   * handful of huge overrides shouldn't look identical to a thousand tiny
+   * ones. compress moves override_total bytes through gzip (parallel,
+   * counted exactly via ctx.completed below); assemble and cache_save each
+   * move roughly a->file_size bytes (the whole archive gets read+recombined,
+   * then the whole result gets written back out), so file_size is counted
+   * twice in the weight total. This is what makes the bar's "100%" line up
+   * with the rebuild actually being done, instead of stopping when only the
+   * compress slice has finished. */
+  double total_weight = (double)override_total + 2.0 * (double)a->file_size;
+  if (total_weight < 1.0) total_weight = 1.0;
+  float bp1 = (float)((double)override_total / total_weight);       /* end of compress */
+  float bp2 = bp1 + (float)((double)a->file_size / total_weight);   /* end of assemble */
+  if (bp2 > 0.999f) bp2 = 0.999f; /* leave a sliver for cache_save even on edge cases */
+
   /* Set up shared compression context. */
   CompressCtx ctx;
   memset(&ctx, 0, sizeof(ctx));
@@ -640,7 +683,11 @@ static uint8_t *arc_rebuild_threaded(Arc *a, size_t *out_size) {
   ctx.failed     = 0;
   mutexInit(&ctx.mtx);
 
-  /* Launch two worker threads on cores 1 and 2; main thread works on core 0. */
+  /* Launch two worker threads on cores 1 and 2; the main thread (core 0) is
+   * the third worker, but claims its share in small batches interleaved
+   * with cache_progress_update() draws, so the "Caching mods..." splash
+   * stays live throughout the rebuild instead of only appearing once at
+   * the very end. t1/t2 keep running continuously the whole time. */
   Thread t1, t2;
   int t1_ok = R_SUCCEEDED(threadCreate(&t1, compress_worker, &ctx,
                                         NULL, 64*1024, 0x2C, 1));
@@ -648,11 +695,23 @@ static uint8_t *arc_rebuild_threaded(Arc *a, size_t *out_size) {
                                         NULL, 64*1024, 0x2C, 2));
   if (t1_ok) threadStart(&t1);
   if (t2_ok) threadStart(&t2);
-  compress_worker(&ctx); /* main thread is the third worker */
+
+  int batch = n_overrides / 40;
+  if (batch < 1) batch = 1;
+  if (batch > 64) batch = 64;
+
+  cache_progress_update(0.0f);
+  while (compress_worker_batch(&ctx, batch) > 0) {
+    uint32_t done = __atomic_load_n(&ctx.completed, __ATOMIC_SEQ_CST);
+    cache_progress_update(bp1 * ((float)done / (float)n_overrides));
+  }
+  cache_progress_update(bp1);
+
   if (t1_ok) { threadWaitForExit(&t1); threadClose(&t1); }
   if (t2_ok) { threadWaitForExit(&t2); threadClose(&t2); }
 
   if (ctx.failed) {
+    cache_progress_finish();
     for (int i = 0; i < n_overrides; i++) free(slots[i].gz_buf);
     free(slots);
     return NULL;
@@ -661,6 +720,7 @@ static uint8_t *arc_rebuild_threaded(Arc *a, size_t *out_size) {
   /* Build a slot lookup: arc_entry_index -> slot_index for O(1) assemble. */
   int *entry_to_slot = (int *)malloc((size_t)n * sizeof(int));
   if (!entry_to_slot) {
+    cache_progress_finish();
     for (int i = 0; i < n_overrides; i++) free(slots[i].gz_buf);
     free(slots);
     return NULL;
@@ -676,6 +736,15 @@ static uint8_t *arc_rebuild_threaded(Arc *a, size_t *out_size) {
   if (!out || !new_offsets || !new_lengths) goto fail_assemble;
 
   size_t wpos = 16; /* header written last, reserve 16 bytes */
+
+  /* Redraw roughly 40 times across the pass, but gate on bytes moved (not
+   * loop index) since entry sizes vary hugely -- a few big background
+   * images can dwarf hundreds of small ones, so index-based striding alone
+   * would make the bar race ahead then stall. */
+  size_t assembled_bytes = 0;
+  size_t assemble_redraw_step = (a->file_size / 40);
+  if (assemble_redraw_step < 65536) assemble_redraw_step = 65536;
+  size_t next_redraw_at = assemble_redraw_step;
 
   for (int i = 0; i < n; i++) {
     ArcEntry *e = &a->entries[i];
@@ -708,7 +777,16 @@ static uint8_t *arc_rebuild_threaded(Arc *a, size_t *out_size) {
       new_lengths[i] = (uint32_t)blob_len;
       wpos += blob_len;
     }
+
+    assembled_bytes += (e->override_data ? new_lengths[i] : e->entry_length);
+    if (assembled_bytes >= next_redraw_at || i == n - 1) {
+      next_redraw_at = assembled_bytes + assemble_redraw_step;
+      double af = (double)assembled_bytes / (double)(a->file_size ? a->file_size : 1);
+      if (af > 1.0) af = 1.0;
+      cache_progress_update(bp1 + (bp2 - bp1) * (float)af);
+    }
   }
+  cache_progress_update(bp2);
 
   /* Build + compress + encode the new index. */
   {
@@ -757,10 +835,12 @@ static uint8_t *arc_rebuild_threaded(Arc *a, size_t *out_size) {
   free(entry_to_slot);
   free(new_offsets); free(new_lengths);
   *out_size = wpos;
+  *out_save_start_frac = bp2;
   return out;
 
 fail_assemble:
   debugPrintf("modpack: arc_rebuild_threaded assemble failed\n");
+  cache_progress_finish();
   for (int i = 0; i < n_overrides; i++) free(slots[i].gz_buf);
   free(slots);
   free(entry_to_slot);
@@ -905,13 +985,21 @@ miss:
 /* --------------------------------------------------------------------------
  * cache_save: write header using pre-computed SrcPath.desc values.
  * No stat or directory walk happens here either.
+ *
+ * progress_start_frac is where arc_rebuild_threaded's splash left off
+ * (end of assemble); this carries it the rest of the way to 1.0 across the
+ * actual SD card write, which on a cache-miss rebuild is often the single
+ * slowest step and was previously invisible (the bar would sit frozen at
+ * 100% while this ran). Always finishes the splash before returning,
+ * success or not, since this is the last step of the rebuild.
  * -------------------------------------------------------------------------- */
 static void cache_save(const char *cache_path,
                         const SrcDesc *arc_desc,
                         const SrcPath *srcs, int nsrcs,
-                        const uint8_t *data, size_t data_len) {
+                        const uint8_t *data, size_t data_len,
+                        float progress_start_frac) {
   FILE *f = fopen(cache_path, "wb");
-  if (!f) return;
+  if (!f) { cache_progress_finish(); return; }
 
   uint8_t hdr[CACHE_HDR_FIXED];
   memcpy(hdr, CACHE_MAGIC, 4);
@@ -937,8 +1025,23 @@ static void cache_save(const char *cache_path,
     fwrite(sdbuf, 1, CACHE_SRC_SZ, f);
   }
 
-  fwrite(data, 1, data_len, f);
+  /* The header/descriptors above are a few hundred bytes at most -- not
+   * worth tracking. The payload is everything, so it's written in chunks
+   * with a splash redraw between each one. */
+  const size_t CHUNK = 2u << 20; /* 2MB */
+  size_t written = 0;
+  while (written < data_len) {
+    size_t n = data_len - written;
+    if (n > CHUNK) n = CHUNK;
+    if (fwrite(data + written, 1, n, f) != n) break;
+    written += n;
+    double sf = (double)written / (double)data_len;
+    cache_progress_update(progress_start_frac + (1.0f - progress_start_frac) * (float)sf);
+  }
+
   fclose(f);
+  cache_progress_update(1.0f);
+  cache_progress_finish();
   debugPrintf("modpack: cache saved (%zu bytes)\n", data_len);
 }
 
@@ -1053,7 +1156,8 @@ int modpack_get_patched_resources(const char *real_path,
   }
 
   size_t built_size = 0;
-  uint8_t *built = arc_rebuild_threaded(&a, &built_size);
+  float save_start_frac = 0.0f;
+  uint8_t *built = arc_rebuild_threaded(&a, &built_size, &save_start_frac);
   arc_free(&a);
 
   if (!built) {
@@ -1061,7 +1165,7 @@ int modpack_get_patched_resources(const char *real_path,
     free(candidates); return 0;
   }
 
-  cache_save(cache_path, &arc_desc, candidates, n_candidates, built, built_size);
+  cache_save(cache_path, &arc_desc, candidates, n_candidates, built, built_size, save_start_frac);
   free(candidates);
 
   *out_buf = built;

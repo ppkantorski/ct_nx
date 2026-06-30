@@ -29,6 +29,7 @@
 #include "opensles.h"
 #include "prefs.h"
 #include "movie_player.h"
+#include "cache_progress.h"
 #include "patches.h"
 
 static void *heap_so_base = NULL;
@@ -694,6 +695,7 @@ int main(void) {
   jni_set_ime_cb((ImeInsertFn)e_insertText, (ImeDeleteFn)e_deleteBackward);
   jni_set_editbox_cb((EbBeginFn)e_ebDidBegin, (EbTextFn)e_ebChanged, (EbTextFn)e_ebDidEnd);
   movie_set_gl_invalidate(e_glInvalidate);
+  cache_progress_set_gl_invalidate(e_glInvalidate);
 
   // a persistent device-name jstring for the controller event callbacks
   g_ctrl_name = jni_make_string("Nintendo Switch Controller");

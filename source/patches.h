@@ -346,39 +346,124 @@ static const PatchEntry g_glyph_patches[] = {
     "MsgText <BTN_*> tags: force controller glyph table (csel x20,x8,x9,ne -> mov x20,x8)"),
 
   // ---------------------------------------------------------------------
-  // <BTN_L>/<BTN_R> glyph text: "[LB]"/"[RB]" -> "[L]"/"[R]"
+  // <BTN_*> glyphs: bracketed letters -> plain "(A)"-style ASCII glyphs
   //
-  // The controller-glyph builder at 0x5fce6c constructs two inline UTF-8
-  // strings via mov/movk into x12/x13, then stores them (stur x12/x13) into
-  // EVERY swap-variant slot of the L/R entries -- one computation, many
-  // copies, confirmed by tracing the stores across all 4 variants. The
-  // strings are Xbox/generic-pad bumper labels, not Switch shoulder labels:
+  // The builder at 0x5fce6c assembles each glyph string inline in registers
+  // (movz/movk) then stores it into every swap-variant slot of TWO parallel
+  // tables: a KEY table at 0xbf3708 (the <BTN_*> search strings) and a VALUE
+  // table at 0xbf3798 (the glyph each key is replaced with). The dialogue
+  // text builder runs std::string::replace(key -> value) for all six rows.
   //
-  //   x12 = e3 80 90 52 42 e3 80 91  = U+3010 'R' 'B' U+3011  ([RB])  <BTN_R>
-  //   x13 = e3 80 90 4c 42 e3 80 91  = U+3010 'L' 'B' U+3011  ([LB])  <BTN_L>
+  // Originally each VALUE glyph was the 7-byte UTF-8 string
+  //   U+3010 <letter> U+3011   ( e.g. e3 80 90 41 e3 80 91 = bracketed 'A' )
+  // built as two overlapping 4-byte halves in a _lo/_hi register pair. We
+  // replace each with the plain 3-byte ASCII string "(<letter>)" (e.g.
+  // "(A)" = 28 41 29), so the button prompt renders as ordinary text in
+  // whichever font is already drawing the surrounding dialogue -- no
+  // Private-Use codepoints and no separate shared-font lookup required.
   //
-  // R and L are directionally correct (R shows R-content, L shows
-  // L-content) -- this is a labelling fix, not an input-swap fix. Drop the
-  // 'B' byte from each (8 bytes -> 7) and shift the closing bracket down;
-  // the libc++ short-string size byte (w16, shared by both) goes from
-  // 0x10 (size 8) to 0x0e (size 7) to match:
-  //
-  //   x12 -> e3 80 90 52 e3 80 91        = U+3010 'R' U+3011      ([R])
-  //   x13 -> e3 80 90 4c e3 80 91        = U+3010 'L' U+3011      ([L])
-  //
-  // Only the byte4..7 movk's change (byte0..3 are identical between the
-  // "RB"/"R" and "LB"/"L" forms, so those instructions are untouched).
+  // CRITICAL: the per-glyph SSO size byte must be set WITHOUT shrinking the
+  // search keys. The builder originally sourced BOTH the glyph size and the
+  // key size from w20, so shrinking w20 also truncated <BTN_R>/<BTN_L> to
+  // <BT, leaving 'N_R>'/'N_L>' after the icon. We therefore leave w20 at its
+  // original 0x0e (keys stay length 7) and instead route every glyph-VALUE
+  // size byte through w16 (set to 0x06 = length 3), which the L/R glyphs
+  // already used. Per glyph: set _lo = '28 <letter> 29 00', zero _hi (NUL
+  // pad) -- the ASCII form is the same 3-byte length as the old PUA glyph,
+  // so the size-byte plumbing below is unchanged.
   // ---------------------------------------------------------------------
-  P_RAW(0x5fcea4, 0xf2dc684c, 0xf2d01c6c,
-    "<BTN_R> glyph: movk x12,#0xe342,lsl32 -> #0x80e3,lsl32 (drop 'B')"),
-  P_RAW(0x5fced0, 0xf2f2300c, 0xf2e0122c,
-    "<BTN_R> glyph: movk x12,#0x9180,lsl48 -> #0x0091,lsl48 (shift ])"),
-  P_RAW(0x5fcea8, 0xf2dc684d, 0xf2d01c6d,
-    "<BTN_L> glyph: movk x13,#0xe342,lsl32 -> #0x80e3,lsl32 (drop 'B')"),
-  P_RAW(0x5fced4, 0xf2f2300d, 0xf2e0122d,
-    "<BTN_L> glyph: movk x13,#0x9180,lsl48 -> #0x0091,lsl48 (shift ])"),
-  P_RAW(0x5fcecc, 0x52800210, 0x528001d0,
-    "<BTN_L>/<BTN_R> glyph: mov w16,#0x10 -> #0x0e (shared size byte 8->7)"),
+  // <BTN_A> glyph -> "(A)" (28 41 29)
+  P_RAW(0x5fce84, 0x52901c68, 0x52882508,
+    "<BTN_A> glyph lo: movz w8,#0x4128 (ASCII 28 41 = \"(A\")"),
+  P_RAW(0x5fceac, 0x72a83208, 0x72a00528,
+    "<BTN_A> glyph lo: movk w8,#0x0029,lsl16 (ASCII 29 00 = \")\\0\")"),
+  P_RAW(0x5fce88, 0x529c682e, 0x5280000e,
+    "<BTN_A> glyph hi: movz w14,#0 (NUL pad)"),
+  P_RAW(0x5fceb0, 0x72b2300e, 0x72a0000e,
+    "<BTN_A> glyph hi: movk w14,#0,lsl16"),
+  // <BTN_B> glyph -> "(B)" (28 42 29)
+  P_RAW(0x5fce8c, 0x52901c75, 0x52884515,
+    "<BTN_B> glyph lo: movz w21,#0x4228 (ASCII 28 42 = \"(B\")"),
+  P_RAW(0x5fceb4, 0x72a85215, 0x72a00535,
+    "<BTN_B> glyph lo: movk w21,#0x0029,lsl16 (ASCII 29 00 = \")\\0\")"),
+  P_RAW(0x5fce90, 0x529c6856, 0x52800016,
+    "<BTN_B> glyph hi: movz w22,#0 (NUL pad)"),
+  P_RAW(0x5fceb8, 0x72b23016, 0x72a00016,
+    "<BTN_B> glyph hi: movk w22,#0,lsl16"),
+  // <BTN_X> glyph -> "(X)" (28 58 29)
+  P_RAW(0x5fce94, 0x52901c6a, 0x528b050a,
+    "<BTN_X> glyph lo: movz w10,#0x5828 (ASCII 28 58 = \"(X\")"),
+  P_RAW(0x5fcebc, 0x72ab120a, 0x72a0052a,
+    "<BTN_X> glyph lo: movk w10,#0x0029,lsl16 (ASCII 29 00 = \")\\0\")"),
+  P_RAW(0x5fce98, 0x529c6b0f, 0x5280000f,
+    "<BTN_X> glyph hi: movz w15,#0 (NUL pad)"),
+  P_RAW(0x5fcec0, 0x72b2300f, 0x72a0000f,
+    "<BTN_X> glyph hi: movk w15,#0,lsl16"),
+  // <BTN_Y> glyph -> "(Y)" (28 59 29)
+  P_RAW(0x5fce9c, 0x52901c6b, 0x528b250b,
+    "<BTN_Y> glyph lo: movz w11,#0x5928 (ASCII 28 59 = \"(Y\")"),
+  P_RAW(0x5fcec4, 0x72ab320b, 0x72a0052b,
+    "<BTN_Y> glyph lo: movk w11,#0x0029,lsl16 (ASCII 29 00 = \")\\0\")"),
+  P_RAW(0x5fcea0, 0x529c6b31, 0x52800011,
+    "<BTN_Y> glyph hi: movz w17,#0 (NUL pad)"),
+  P_RAW(0x5fcec8, 0x72b23011, 0x72a00011,
+    "<BTN_Y> glyph hi: movk w17,#0,lsl16"),
+  // <BTN_R> glyph -> "(R)" (28 52 29)   |   <BTN_L> glyph -> "(L)" (28 4c 29)
+  P_RAW(0x5fce6c, 0xd2901c6c, 0xd28a450c,
+    "<BTN_R> glyph: movz x12,#0x5228 (ASCII 28 52 = \"(R\")"),
+  P_RAW(0x5fce7c, 0xf2aa520c, 0xf2a0052c,
+    "<BTN_R> glyph: movk x12,#0x0029,lsl16 (ASCII 29 00 = \")\\0\")"),
+  P_RAW(0x5fcea4, 0xf2dc684c, 0xf2c0000c,
+    "<BTN_R> glyph: movk x12,#0,lsl32 (NUL pad)"),
+  P_RAW(0x5fced0, 0xf2f2300c, 0xf2e0000c,
+    "<BTN_R> glyph: movk x12,#0,lsl48 (NUL pad)"),
+  P_RAW(0x5fce70, 0xd2901c6d, 0xd289850d,
+    "<BTN_L> glyph: movz x13,#0x4c28 (ASCII 28 4c = \"(L\")"),
+  P_RAW(0x5fce80, 0xf2a9920d, 0xf2a0052d,
+    "<BTN_L> glyph: movk x13,#0x0029,lsl16 (ASCII 29 00 = \")\\0\")"),
+  P_RAW(0x5fcea8, 0xf2dc684d, 0xf2c0000d,
+    "<BTN_L> glyph: movk x13,#0,lsl32 (NUL pad)"),
+  P_RAW(0x5fced4, 0xf2f2300d, 0xf2e0000d,
+    "<BTN_L> glyph: movk x13,#0,lsl48 (NUL pad)"),
+
+  // --- key/glyph size-byte decoupling (the fix for the 'N_R>' leak) ---
+  // w20 is left UNTOUCHED at 0x0e so all six <BTN_*> search keys keep their
+  // full length. w16 becomes 0x06 and is used as the size byte for every
+  // glyph VALUE row (A/B/X/Y newly routed to it; L/R already used it).
+  P_RAW(0x5fcecc, 0x52800210, 0x528000d0,
+    "glyph size reg: mov w16,#0x10 -> #0x06 (SSO len 3, shared by all 6 glyph values)"),
+  // Route the 15 A/B/X/Y glyph-value size stores from w20 -> w16 so they
+  // get length 3 while the keys (still w20) keep length 7.
+  P_RAW(0x5fcedc, 0x39000134, 0x39000130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0x0] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcef4, 0x39006134, 0x39006130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0x18] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcf04, 0x3900c134, 0x3900c130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0x30] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcf14, 0x39012134, 0x39012130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0x48] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcf48, 0x3902a134, 0x3902a130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0xa8] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcf58, 0x39030134, 0x39030130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0xc0] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcf68, 0x39036134, 0x39036130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0xd8] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcf8c, 0x39048134, 0x39048130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0x120] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcf98, 0x3904e134, 0x3904e130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0x138] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcfa8, 0x39054134, 0x39054130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0x150] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcfb8, 0x3905a134, 0x3905a130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0x168] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcfd8, 0x3906c134, 0x3906c130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0x1b0] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcfe4, 0x39072134, 0x39072130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0x1c8] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fcff4, 0x39078134, 0x39078130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0x1e0] (use size-3 reg, not key-size reg)"),
+  P_RAW(0x5fd000, 0x3907e134, 0x3907e130,
+    "A/B/X/Y glyph size store: strb w20 -> w16 [x9,#0x1f8] (use size-3 reg, not key-size reg)"),
 };
 
 // ---------------------------------------------------------------------------

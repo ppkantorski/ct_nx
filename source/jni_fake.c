@@ -418,29 +418,38 @@ static int create_text_bitmap(va_list va) {
   memcpy(str, text->data, text->len);
   str[text->len] = 0;
 
+  int w = 0, h = 0;
+  unsigned char *rgba = gfx_render_text_rgba(str, fontSize, r, g, b, a,
+                                             align & 0x0F, (align >> 4) & 0x0F,
+                                             width, height, wrap, &w, &h);
+
 #if DEBUG_INSTR
-  // log how the engine lays out this text so we can see the input field's real
-  // alignment/box AND the exact fill colour + shadow/stroke it asks for (grep the
-  // option text in textdbg.log; rgba= is the fill colour the engine requested).
+  // Log how the engine lays out this text AND what we actually handed back, so
+  // we can see whether a given screen requests an explicit box (boxH>0, which
+  // engages our align_v centring) or an auto-fit one (boxH=0, sized from the
+  // text itself) -- and, now that the render has happened, the real w/h we
+  // returned. Menus that stack rows by reading back this label's own height
+  // (e.g. via Label::getContentSize()) will drift if that returned height
+  // doesn't match what the original Android renderer would have produced at
+  // the same requested size -- logged here so a problem screen's actual
+  // numbers can be compared directly against a screen that looks right,
+  // instead of guessing further from static disassembly of the closed-source
+  // engine.
   {
     FILE *tl = fopen("textdbg.log", "a");
     if (tl) {
       fprintf(tl, "text='%s' font='%s' size=%d rgba=%d,%d,%d,%d alignH=%d alignV=%d "
                   "boxW=%d boxH=%d wrap=%d shadow=%d dx=%.1f dy=%.1f blur=%.1f op=%.2f "
-                  "stroke=%d srgba=%d,%d,%d,%d ssize=%.1f\n",
+                  "stroke=%d srgba=%d,%d,%d,%d ssize=%.1f outW=%d outH=%d\n",
               str, font_name ? font_name : "", fontSize, r, g, b, a,
               align & 0x0F, (align >> 4) & 0x0F, width, height, wrap,
               shadow, shadowDX, shadowDY, shadowBlur, shadowOpacity,
-              stroke, strokeR, strokeG, strokeB, strokeA, strokeSize);
+              stroke, strokeR, strokeG, strokeB, strokeA, strokeSize, w, h);
       fclose(tl);
     }
   }
 #endif
 
-  int w = 0, h = 0;
-  unsigned char *rgba = gfx_render_text_rgba(str, fontSize, r, g, b, a,
-                                             align & 0x0F, (align >> 4) & 0x0F,
-                                             width, height, wrap, &w, &h);
   free(str);
   if (!rgba) return 0;
 
