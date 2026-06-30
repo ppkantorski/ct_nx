@@ -132,6 +132,15 @@ typedef struct {
   //                        Belt-and-braces with native_controller; harmless on.
   int native_controller;
   int controller_glyphs;
+  // fix_diagonal_movement -- 1 = patch FieldImpl::UserScroll's diagonal-input
+  //                          cases to accumulate position from the raw
+  //                          per-frame delta directly (matching how
+  //                          cardinal/non-diagonal movement already works),
+  //                          instead of the original float divide-by-1.39 +
+  //                          per-frame truncation, which under-advances the
+  //                          target every frame and reads as a stutter.
+  //                          Pure visual/feel fix; no save-data impact.
+  int fix_diagonal_movement;
   // Mod pack directory. Place .ctp files (ChronoMod-compatible Chrono Trigger
   // Patch archives) here and they will be applied to resources.bin at startup
   // without touching the original file. Paths are relative to the install

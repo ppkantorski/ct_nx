@@ -382,6 +382,76 @@ static const PatchEntry g_glyph_patches[] = {
 };
 
 // ---------------------------------------------------------------------------
+// 5.  diagonal_movement
+//
+//     Same bug class CTExt fixes on PC (FieldImpl::UserScrollDiagonal hook,
+//     ctext.hooks.field_impl.ixx: "Fixes the diagonal movement stutter bug by
+//     reverting to the original behaviour"). FieldImpl::UserScroll (0x5a1380)
+//     is one shared switch over the 8-direction input mask (w8 = case index):
+//
+//       cardinal cases (w8=0,1,3,7 = up/down/left/right): raw per-axis delta
+//         (+-0x10/0x20 walk/run) is stored to [x8,#0x90/#0x94] AND committed
+//         straight into the X/Y target accumulators at [x8,#0x98]/[x8,#0xa4]
+//         every frame -- smooth, constant per-frame step.
+//
+//       diagonal cases (w8=4,5,8,9 = the 4 diagonals): the SAME raw delta is
+//         stored to [x8,#0x90]/[x8,#0x94] (so cardinal-style consumers see
+//         the right magnitude), but the X/Y TARGET accumulators instead go
+//         through an extra float path: divide the raw delta by 0x3fb1eb85
+//         (1.39, a rough "diagonal speed compensation" constant -- notably
+//         NOT sqrt(2)=1.41421...), truncate to int (fcvtzs = round toward
+//         zero) and add. Truncating every single frame instead of carrying
+//         the fractional remainder means the target consistently advances
+//         slower (~23/frame instead of 32/frame, etc.) than the raw/cardinal
+//         rate -- a per-frame divergence between what's stored as "raw" and
+//         what the camera/position actually commits to. That's the stutter.
+//
+//     Fix: make diagonal commit the raw delta directly, exactly like
+//     cardinal already does (target += raw, no normalize/truncate), instead
+//     of porting the float math byte-for-byte. Each of the 4 diagonal blocks
+//     ends with a "cbnz w12, <go down the float path>" immediately after
+//     storing the raw delta to [x8,#0x90]/[x8,#0x94] -- redirect each of
+//     those 4 branches (unconditionally) into a small shared cave that does
+//     the same raw-int accumulate the cardinal blocks use, then jumps to the
+//     function's existing epilogue. Verified: redirecting these 4 sites
+//     touches only diagonal-block code; the cardinal blocks' own commit site
+//     (0x5a16bc) and the function epilogue (0x5a16c8) are untouched and are
+//     also where this cave's last instruction lands.
+//
+//     Net gameplay effect: diagonal movement speed equals raw axis speed
+//     (matches cardinal exactly) instead of running ~28% slower with visible
+//     truncation-stutter -- the same direction CTExt's PC fix takes (drop
+//     the lossy per-frame normalize/truncate, accumulate raw deltas).
+// ---------------------------------------------------------------------------
+static const PatchEntry g_diagonal_patches[] = {
+  // Redirect each diagonal block's post-store branch into the shared cave below.
+  // Original instruction at each site is the first half of a float divide-by-1.39
+  // "diagonal speed normalization" (cbnz into the float path); replacing it with an
+  // unconditional branch skips that path entirely for all 4 diagonal blocks.
+  P_RAW(0x5a14e4, 0x35000a0c, 0x1400003a,
+    "UserScroll diagonal block w8=4 (down-right/up-right family): skip float normalize, use raw-int accumulate"),
+  P_RAW(0x5a151c, 0x35000a0c, 0x1400002c,
+    "UserScroll diagonal block w8=9: skip float normalize, use raw-int accumulate"),
+  P_RAW(0x5a1570, 0x350003ac, 0x14000017,
+    "UserScroll diagonal block w8=5: skip float normalize, use raw-int accumulate"),
+  P_RAW(0x5a15c8, 0x3500018c, 0x14000001,
+    "UserScroll diagonal block w8=8: skip float normalize, use raw-int accumulate"),
+
+  // Cave @ 0x5a15cc (40 bytes of now-dead code after the 4 redirects above;
+  // verified empty/unreachable -- nothing else in the function branches here).
+  P_CAVE(0x5a15cc, 0x29522d0a, "cave: ldp w10,w11,[x8,#0x90]   ; w10,w11 = raw per-axis step just stored (same magnitude cardinal uses)"),
+  P_CAVE(0x5a15d0, 0xb940990c, "cave: ldr w12,[x8,#0x98]       ; w12 = current X target"),
+  P_CAVE(0x5a15d4, 0xb0a018c, "cave: add w12,w12,w10          ; X target += raw X step (no normalization, no truncation loss)"),
+  P_CAVE(0x5a15d8, 0xb900990c, "cave: str w12,[x8,#0x98]"),
+  P_CAVE(0x5a15dc, 0xb900a10c, "cave: str w12,[x8,#0xa0]       ; commit X (matches cardinal's commit site)"),
+  P_CAVE(0x5a15e0, 0xb940a509, "cave: ldr w9,[x8,#0xa4]        ; w9 = current Y target"),
+  P_CAVE(0x5a15e4, 0xb0b0129, "cave: add w9,w9,w11            ; Y target += raw Y step"),
+  P_CAVE(0x5a15e8, 0xb900a509, "cave: str w9,[x8,#0xa4]"),
+  P_CAVE(0x5a15ec, 0xb900ad09, "cave: str w9,[x8,#0xac]        ; commit Y (matches cardinal's commit site)"),
+  P_CAVE(0x5a15f0, 0x14000036, "cave: b 0x5a16c8 (UserScroll epilogue, restores x19/x29/x30 and returns)"),
+};
+
+// ---------------------------------------------------------------------------
 // The bilinear patches use pattern-search within the function body (as the
 // Python script does) rather than hard-coded relative offsets, because the
 // compiler may arrange the instructions differently. We provide a dedicated
@@ -476,6 +546,11 @@ static inline void apply_game_patches(so_module *mod) {
   if (config.controller_glyphs) {
     debugPrintf("patches: applying controller_glyphs\n");
     apply_patches(mod, g_glyph_patches, PATCH_COUNT(g_glyph_patches));
+  }
+
+  if (config.fix_diagonal_movement) {
+    debugPrintf("patches: applying diagonal_movement fix\n");
+    apply_patches(mod, g_diagonal_patches, PATCH_COUNT(g_diagonal_patches));
   }
 }
 
