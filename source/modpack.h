@@ -1,6 +1,6 @@
 /* modpack.h -- ChronoMod-compatible .ctp mod pack support
  *
- * Scans config.mods_dir for *.ctp files (standard ZIP archives whose
+ * Scans MODS_DIR for *.ctp files (standard ZIP archives whose
  * internal paths match resources.bin entry paths) and, if any are found,
  * produces a patched in-memory copy of resources.bin with those entries
  * replaced.  The original file on disk is never modified.
@@ -17,7 +17,7 @@
 
 /* modpack_get_patched_resources
  *
- * If config.mods_dir contains at least one .ctp file with entries that match
+ * If MODS_DIR contains at least one .ctp file with entries that match
  * paths inside resources.bin, allocates and returns a fully-rebuilt patched
  * copy of the archive in *out_buf / *out_len (caller must free(*out_buf)).
  *

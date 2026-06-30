@@ -17,28 +17,37 @@
 
 #include "config.h"
 
+// CONFIG_COMMENT is a no-op for parsing/defaults -- it only does something in
+// write_config (prints a "; ..." section header line), so config.ini comes
+// out grouped and readable instead of one flat list of keys.
 #define CONFIG_VARS \
+  CONFIG_COMMENT("--- Screen ---"); \
   CONFIG_VAR_INT(screen_width_handheld); \
   CONFIG_VAR_INT(screen_height_handheld); \
   CONFIG_VAR_INT(screen_width_docked); \
   CONFIG_VAR_INT(screen_height_docked); \
+  CONFIG_COMMENT("--- Language ---"); \
   CONFIG_VAR_STR(language); \
-  CONFIG_VAR_INT(gl_threaded); \
-  CONFIG_VAR_INT(gl_no_error); \
+  CONFIG_COMMENT("--- Font ---"); \
   CONFIG_VAR_INT(game_font); \
   CONFIG_VAR_STR(game_font_path); \
   CONFIG_VAR_FLOAT(game_font_scale); \
   CONFIG_VAR_FLOAT(game_font_xscale); \
+  CONFIG_COMMENT("--- Text shadow ---"); \
   CONFIG_VAR_INT(text_shadow); \
-  CONFIG_VAR_INT(text_shadow_alpha); \
   CONFIG_VAR_FLOAT(text_shadow_scale); \
+  CONFIG_VAR_INT(text_shadow_alpha); \
+  CONFIG_COMMENT("--- Performance ---"); \
+  CONFIG_VAR_INT(gl_threaded); \
+  CONFIG_VAR_INT(gl_no_error); \
+  CONFIG_COMMENT("--- Runtime binary patches ---"); \
+  CONFIG_VAR_INT(remove_mobile_ui); \
   CONFIG_VAR_INT(cursor_fix); \
   CONFIG_VAR_INT(remove_bilinear_filter); \
-  CONFIG_VAR_INT(remove_mobile_ui); \
+  CONFIG_COMMENT("--- Input / controller ---"); \
   CONFIG_VAR_INT(native_controller); \
   CONFIG_VAR_INT(controller_glyphs); \
-  CONFIG_VAR_INT(fix_diagonal_movement); \
-  CONFIG_VAR_STR(mods_dir);
+  CONFIG_VAR_INT(fix_diagonal_movement);
 
 Config config;
 
@@ -50,10 +59,12 @@ static inline void parse_var(const char *name, const char *value) {
   #define CONFIG_VAR_INT(var) if (!strcmp(name, #var)) { config.var = atoi(value); return; }
   #define CONFIG_VAR_FLOAT(var) if (!strcmp(name, #var)) { config.var = atof(value); return; }
   #define CONFIG_VAR_STR(var) if (!strcmp(name, #var)) { strlcpy(config.var, value, sizeof(config.var)); return; }
+  #define CONFIG_COMMENT(text) // no-op when parsing -- comments aren't real keys
   CONFIG_VARS
   #undef CONFIG_VAR_INT
   #undef CONFIG_VAR_FLOAT
   #undef CONFIG_VAR_STR
+  #undef CONFIG_COMMENT
 }
 
 // Trims leading/trailing whitespace (and a trailing \r, for files saved with
@@ -69,19 +80,19 @@ static char *trim(char *s) {
 
 static void set_defaults(void) {
   memset(&config, 0, sizeof(Config));
-  config.screen_width_handheld = -1;  // auto: 1280x720
-  config.screen_height_handheld = -1;
-  config.screen_width_docked = -1;    // auto: 1920x1080
-  config.screen_height_docked = -1;
+  config.screen_width_handheld = 1280;
+  config.screen_height_handheld = 720;
+  config.screen_width_docked = 1920;
+  config.screen_height_docked = 1080;
   strlcpy(config.language, LANG_DEFAULT, sizeof(config.language));
   config.gl_threaded = 1;   // offload GL submission to a second core by default
   config.gl_no_error = 1;   // skip mesa's GL call validation by default
   config.game_font = 1;     // try the in-game font for system-font labels (testing)
-  config.game_font_path[0] = 0; // empty: probe common asset locations
-  config.game_font_scale = 1.0f; // 1.0 = auto-fit cap height to the shared font
+  strlcpy(config.game_font_path, "/switch/ct/ChronoType.ttf", sizeof(config.game_font_path));
+  config.game_font_scale = 0.90f; // 1.0 = auto-fit cap height to the shared font
   config.game_font_xscale = 1.0f; // 1.0 = no horizontal squeeze
   config.text_shadow = 1;         // crisp CT-style drop shadow on system-font labels
-  config.text_shadow_alpha = 230; // shadow opacity 0..255 (black)
+  config.text_shadow_alpha = 200; // shadow opacity 0..255 (black)
   config.text_shadow_scale = 1.0f; // offset multiplier (auto offset scales w/ size)
   config.cursor_fix = 1;           // keep selected text WHITE, dark highlight
   config.remove_bilinear_filter = 1; // force GL_NEAREST (pixel-perfect filtering)
@@ -186,15 +197,26 @@ int write_config(const char *file) {
 
   fprintf(f, "[config]\n");
 
+  // Blank line before every section header except the first one (which
+  // already sits right under "[config]"), so the file reads as visually
+  // separated groups instead of one unbroken block.
+  int first_comment = 1;
+
   #define CONFIG_VAR_INT(var) fprintf(f, "%s = %d\n", #var, config.var)
   #define CONFIG_VAR_FLOAT(var) fprintf(f, "%s = %g\n", #var, config.var)
   // write strings verbatim (empty stays empty); language is guaranteed non-empty
   // by read_config, so it never needs the old LANG_DEFAULT fallback here.
   #define CONFIG_VAR_STR(var) fprintf(f, "%s = %s\n", #var, config.var)
+  #define CONFIG_COMMENT(text) do { \
+    if (!first_comment) fprintf(f, "\n"); \
+    first_comment = 0; \
+    fprintf(f, "; %s\n", text); \
+  } while (0)
   CONFIG_VARS
   #undef CONFIG_VAR_INT
   #undef CONFIG_VAR_FLOAT
   #undef CONFIG_VAR_STR
+  #undef CONFIG_COMMENT
 
   fclose(f);
 
