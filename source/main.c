@@ -97,17 +97,48 @@ static void check_data(void) {
 
 static void set_screen_size(AppletOperationMode mode) {
   // Per-mode resolution -- see the Config struct doc comment in config.h.
-  // Explicit values are honoured up to 4K (supersampling); -1/-1 or anything
-  // out of range auto-picks the native size for that mode.
-  int w, h;
-  if (mode == AppletOperationMode_Console) {
-    w = config.screen_width_docked;
-    h = config.screen_height_docked;
-    if (w <= 0 || h <= 0 || w > 3840 || h > 2160) { w = 1920; h = 1080; }
-  } else {
-    w = config.screen_width_handheld;
-    h = config.screen_height_handheld;
-    if (w <= 0 || h <= 0 || w > 3840 || h > 2160) { w = 1280; h = 720; }
+  //
+  // The EGL surface we ask for here becomes the buffer HOS composites onto
+  // the real physical panel. If those two sizes don't match exactly, the
+  // system compositor has to rescale our frame every frame -- a stage that
+  // lives entirely outside the engine and outside every patch in patches.h.
+  // scale_diag.log caught this directly: screen_width_docked=2560 was being
+  // squeezed down to a real 1920x1080 panel (a 0.75x resample), which is
+  // exactly the "still shimmers, gets worse with a bigger buffer" symptom.
+  //
+  // So: query the real panel size from the OS first. A config override is
+  // only honoured if it's an EXACT whole-number multiple of the panel in
+  // both axes (deliberate integer supersampling -- harmless, still a clean
+  // pixel grid). Anything else -- including the old fixed 1920x1080/1280x720
+  // guesses -- falls back to the panel's native size, which guarantees a
+  // true 1:1 buffer with zero compositor rescale.
+  s32 panel_w = 0, panel_h = 0;
+  appletGetDefaultDisplayResolution(&panel_w, &panel_h);
+  if (panel_w <= 0 || panel_h <= 0) {
+    // Query failed (shouldn't happen, but don't leave screen_width/height
+    // at 0) -- fall back to the old hardcoded per-mode guesses.
+    panel_w = (mode == AppletOperationMode_Console) ? 1920 : 1280;
+    panel_h = (mode == AppletOperationMode_Console) ? 1080 : 720;
+  }
+
+  int cfg_w = (mode == AppletOperationMode_Console) ? config.screen_width_docked
+                                                     : config.screen_width_handheld;
+  int cfg_h = (mode == AppletOperationMode_Console) ? config.screen_height_docked
+                                                     : config.screen_height_handheld;
+
+  int w = panel_w, h = panel_h;
+  if (cfg_w > 0 && cfg_h > 0 && cfg_w <= 3840 && cfg_h <= 2160) {
+    // Only accept it if it scales the panel by the same whole integer on
+    // both axes -- e.g. panel 1920x1080 + cfg 3840x2160 (2x) is fine;
+    // cfg 2560x1440 against that same panel (4/3, non-integer) is not.
+    if (cfg_w % panel_w == 0 && cfg_h % panel_h == 0 &&
+        (cfg_w / panel_w) == (cfg_h / panel_h)) {
+      w = cfg_w; h = cfg_h;
+    } else {
+      debugPrintf("set_screen_size: config %dx%d is not an integer multiple of "
+                  "the real %dx%d panel -- using native panel size instead "
+                  "to avoid a compositor rescale.\n", cfg_w, cfg_h, panel_w, panel_h);
+    }
   }
   screen_width = w; screen_height = h;
 }
@@ -236,6 +267,7 @@ static void (*e_ebDidBegin)(void *env, void *cls, int index);
 static void (*e_ebChanged)(void *env, void *cls, int index, void *jstr);
 static void (*e_ebDidEnd)(void *env, void *cls, int index, void *jstr);
 static void (*e_glInvalidate)(void); // cocos2d::GL::invalidateStateCache (post-movie)
+static void *(*e_director_getInstance)(void); // cocos2d::Director::getInstance() -- diagnostic only
 
 // DeviceInfo::mCurrentLanguage (int): the engine indexes mLocalizationLanguages
 // with this directly (ja=0 en=1 de=2 it=3 es=4 fr=5 zh-Hans=6 zh-Hant=7 ko=8).
@@ -271,6 +303,7 @@ static void resolve_entry_points(void) {
   e_ebChanged             = (void *)RX("Java_org_cocos2dx_lib_Cocos2dxEditBoxHelper_editBoxEditingChanged");
   e_ebDidEnd              = (void *)RX("Java_org_cocos2dx_lib_Cocos2dxEditBoxHelper_editBoxEditingDidEnd");
   e_glInvalidate          = (void *)RX("_ZN7cocos2d2GL20invalidateStateCacheEv");
+  e_director_getInstance  = (void *)RX("_ZN7cocos2d8Director11getInstanceEv"); // diagnostic only
   e_lang_var              = (int *)RX("_ZN10DeviceInfo16mCurrentLanguageE");
 }
 
@@ -462,6 +495,70 @@ static void update_touch(void) {
     if (e_touchEnd) e_touchEnd(fake_env, thiz, 0, last_tx, last_ty);
   }
 }
+
+// ---------------------------------------------------------------------------
+// DIAG_SCALE -- one-off instrumentation to pin down the exact scale factors
+// in the cocos2d Director/GLView resolution pipeline, in order to diagnose
+// the scroll-only shimmer bug. Reads fields directly off the live Director
+// and GLView objects (offsets confirmed via static disassembly of this same
+// libchrono.so build -- BuildID-matched). Pure diagnostic; no behavior
+// change. Remove or set to 0 once the numbers are in.
+// ---------------------------------------------------------------------------
+#define DIAG_SCALE 0
+#if DIAG_SCALE
+static void diag_scale_dump(void) {
+  static int done = 0;
+  static u64 freq = 0, t0 = 0;
+  static int sample = 0;
+  const int MAX_SAMPLES = 12;   // ~1 every 3s for the first 36s of runtime
+  if (done || !e_director_getInstance) return;
+  if (!freq) { freq = armGetSystemTickFreq(); t0 = armGetSystemTick(); }
+  const u64 now = armGetSystemTick();
+  const double secs = (double)(now - t0) / (double)freq;
+  if (sample == 0 && secs < 1.0) return;              // first sample ~1s after boot
+  if (sample > 0 && secs < (double)sample * 3.0) return; // then every ~3s
+
+  void *director = e_director_getInstance();
+  if (!director) return;
+
+  unsigned char *d = (unsigned char *)director;
+  float contentScaleFactor = *(float *)(d + 0x188);
+  float designW = *(float *)(d + 0x180);
+  float designH = *(float *)(d + 0x184);
+  void *glview = *(void **)(d + 0xf0);
+
+  // Real physical panel size, straight from the OS -- independent of whatever
+  // EGL surface size we asked for. If this doesn't match screen_width/height,
+  // HOS's window compositor is rescaling our buffer onto the panel on every
+  // frame, which is a scaling stage no libchrono.so patch can touch.
+  s32 panel_w = 0, panel_h = 0;
+  appletGetDefaultDisplayResolution(&panel_w, &panel_h);
+
+  FILE *fl = fopen("scale_diag.log", "a");
+  if (fl) {
+    fprintf(fl, "[t=%.1fs] screen_width=%d screen_height=%d panelResolution=%dx%d "
+                "contentScaleFactor=%.6f designResolution=%.2fx%.2f glview=%p\n",
+            secs, screen_width, screen_height, panel_w, panel_h,
+            contentScaleFactor, designW, designH, glview);
+    if (glview) {
+      unsigned char *g = (unsigned char *)glview;
+      float frameW = *(float *)(g + 0x24);
+      float frameH = *(float *)(g + 0x28);
+      float dsgnW  = *(float *)(g + 0x2c);
+      float dsgnH  = *(float *)(g + 0x30);
+      float scaleX = *(float *)(g + 0x60);
+      float scaleY = *(float *)(g + 0x64);
+      int   policy = *(int   *)(g + 0x68);
+      fprintf(fl, "         glview.frameSize=%.2fx%.2f glview.designSize=%.2fx%.2f "
+                  "mScaleX=%.6f mScaleY=%.6f resolutionPolicy=%d\n",
+              frameW, frameH, dsgnW, dsgnH, scaleX, scaleY, policy);
+    }
+    fclose(fl);
+  }
+  sample++;
+  if (sample >= MAX_SAMPLES) done = 1;
+}
+#endif
 
 // ---------------------------------------------------------------------------
 
@@ -794,6 +891,10 @@ int main(void) {
 
     if (boot_frames < 10 && ++boot_frames == 10)
       cpu_boost(0);
+
+#if DIAG_SCALE
+    diag_scale_dump();
+#endif
 
 #if DEBUG_INSTR
     // bucket frame durations; dump a one-line summary every ~5s. A high

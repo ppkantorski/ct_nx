@@ -537,6 +537,104 @@ static const PatchEntry g_diagonal_patches[] = {
 };
 
 // ---------------------------------------------------------------------------
+// 6.  fixed_timestep
+//
+//     Root cause of the "everything shimmers/scoots while moving, clean when
+//     stationary" artifact -- confirmed by frametime.log: a locked ~60fps
+//     (avg 16.72ms, ~0 dropped frames) but with heavy per-frame jitter (a large
+//     share of frames land 17-20ms while others land short). cocos2d advances
+//     ALL motion by Director::_deltaTime (Director+0xe8), which Director::
+//     drawScene recomputes every frame as the raw wall-clock gap since the
+//     previous frame:
+//
+//         _deltaTime = max( (now - _lastUpdate) seconds , 0 )   // no smoothing
+//
+//     Vsync pins presentation to a clean 60Hz, but that measured gap still
+//     wobbles, so constant-speed motion advances by an uneven number of pixels
+//     each displayed frame. The eye integrates the unevenness as a directional
+//     smear -- worse the faster you move, a faint "flag in the wind" wave when
+//     slow, gone at rest -- and it hits everything on that clock: field scroll,
+//     free sprites, and sliding menu text alike. Notably it is NOT a scaling or
+//     sampling artifact (identical with bilinear on or off) and NOT dropped
+//     frames (over34ms ~= 0), which is what ruled every earlier theory out.
+//
+//     CT is frame-based at heart (the SNES ran a rock-steady 60Hz); its motion
+//     logic wants a constant step. Fix: force _deltaTime to a fixed 1/60s every
+//     frame instead of the jittery measured value, so every frame advances by
+//     exactly the same amount. Patched at BOTH writers of _deltaTime:
+//     Director::drawScene (the live per-frame path; dt is inlined there) and the
+//     sibling Director::calculateDeltaTime. At each site the dead measured-dt
+//     computation block is overwritten IN PLACE with "w8 = 1/60 bits; s0 =
+//     (float)w8; branch to the existing _deltaTime store". The _nextDeltaTimeZero
+//     reset path (dt forced to 0 for one frame after a pause/scene load) and the
+//     _lastUpdate write are both left untouched, so only the normal-frame delta
+//     changes. 1/60 = 0x3c888889; it is too small to encode as fmov #imm, hence
+//     the movz/movk + fmov s0,w8.
+//
+//     Trade-off: if the game ever SUSTAINS below 60fps (rare here), a fixed step
+//     makes motion run real-time-slow for those frames rather than skipping --
+//     for a single-player RPG that is the right call and far less visible than
+//     the judder. Disable this flag to revert to the original measured dt.
+// ---------------------------------------------------------------------------
+static const PatchEntry g_fixed_timestep_patches[] = {
+  // Director::drawScene @0x8d85a0 -- live per-frame dt store. Overwrite the
+  // else-branch (measured-dt math) with: w8=0x3c888889; s0=(float)w8; b <store>.
+  P_RAW(0x8d85dc, 0xf940ba68, 0x52911128, "drawScene: movz w8,#0x8889 (lo half of 1/60)"),
+  P_RAW(0x8d85e0, 0xcb080008, 0x72a79108, "drawScene: movk w8,#0x3c88,lsl#16 -> w8 = 1/60 bits"),
+  P_RAW(0x8d85e4, 0x9b557d08, 0x1e270100, "drawScene: fmov s0,w8 (dt = 1/60)"),
+  P_RAW(0x8d85e8, 0x9347fd09, 0x14000009, "drawScene: b 0x8d860c (fall into the _deltaTime store)"),
+
+  // Director::calculateDeltaTime @0x8d8888 -- sibling copy, patched identically.
+  P_RAW(0x8d88b0, 0xd29ef9e9, 0x52911128, "calcDeltaTime: movz w8,#0x8889"),
+  P_RAW(0x8d88b4, 0xf940ba68, 0x72a79108, "calcDeltaTime: movk w8,#0x3c88,lsl#16"),
+  P_RAW(0x8d88b8, 0xf2bc6a69, 0x1e270100, "calcDeltaTime: fmov s0,w8"),
+  P_RAW(0x8d88bc, 0xf2d374a9, 0x1400000d, "calcDeltaTime: b 0x8d88f0 (fall into the _deltaTime store)"),
+};
+
+// ---------------------------------------------------------------------------
+// 7.  design_resolution_fix
+//
+//     ROOT CAUSE of the motion shimmer / "scooting" / thinning-eyes artifact
+//     (confirmed via scale_diag.log, not guessed): AppDelegate::
+//     applicationDidFinishLaunching hardcodes the cocos2d-x design resolution
+//     to 568x320 -- leftover iPhone-5 boilerplate (aspect 568/320 = 1.775),
+//     completely unrelated to the Switch's panel. cocos2d::GLView::
+//     updateDesignResolutionSize computes mScaleX = frameWidth/designWidth
+//     and mScaleY = frameHeight/designHeight; every Switch panel is exact
+//     16:9, so this always lands on 1280/568 = 720/320 = 2.253521... --
+//     never an integer, on every resolution, handheld or docked. That
+//     fractional scale is what every layer (field render-targets, sprites,
+//     and UI/menu text alike) gets stretched by, and GL_NEAREST sampling of
+//     a non-integer, per-frame-shifting scroll position is exactly what
+//     reads as scoot/shimmer in motion and clean at rest.
+//
+//     This supersedes the earlier integer_scale_fix attempt (rounding
+//     mScaleX/mScaleY after the fact, at 0x8b76b4) -- that only changed the
+//     zoom level, because the *input* to the division was still the wrong
+//     design resolution. Fixing the actual constant is the correct place:
+//     640x360 is exact 16:9, so it divides every Switch resolution cleanly
+//     -- 1280x720 -> 2.0x, 1920x1080 -> 3.0x, 2560x1440 -> 4.0x -- with no
+//     rounding, no cave, no downstream patch needed at all.
+//
+//     Patches the two float-literal immediates in the small unnamed static
+//     initializer that populates the Size table AppDelegate reads from
+//     (function at 0x641bf4, no exported symbol): 568.0 -> 640.0 and
+//     320.0 -> 360.0. Both original and replacement values happen to encode
+//     with zero low-16-bits, so each is a single "mov w_,#imm" instruction
+//     (movz, no movk needed) -- a pure immediate swap, no branches added.
+//
+//     Trade-off: at the new design resolution the game shows ~12% more of
+//     the world per screen edge-to-edge (568/320 -> 640/360 is a small
+//     zoom-out), since more world now maps to the same screen. Sprite/UI
+//     pixel density is unaffected -- this is a scale-alignment fix, not a
+//     resize -- only the visible margin changes slightly.
+// ---------------------------------------------------------------------------
+static const PatchEntry g_design_resolution_patches[] = {
+  P_RAW(0x641c34, 0x52a881c8, 0x52a88408, "AppDelegate init: mov w8,#0x44200000 (design width 568.0 -> 640.0)"),
+  P_RAW(0x641c38, 0x52a87409, 0x52a87689, "AppDelegate init: mov w9,#0x43b40000 (design height 320.0 -> 360.0)"),
+};
+
+// ---------------------------------------------------------------------------
 // The bilinear patches use pattern-search within the function body (as the
 // Python script does) rather than hard-coded relative offsets, because the
 // compiler may arrange the instructions differently. We provide a dedicated
@@ -636,6 +734,16 @@ static inline void apply_game_patches(so_module *mod) {
   if (config.fix_diagonal_movement) {
     debugPrintf("patches: applying diagonal_movement fix\n");
     apply_patches(mod, g_diagonal_patches, PATCH_COUNT(g_diagonal_patches));
+  }
+
+  if (config.fixed_timestep) {
+    debugPrintf("patches: applying fixed_timestep\n");
+    apply_patches(mod, g_fixed_timestep_patches, PATCH_COUNT(g_fixed_timestep_patches));
+  }
+
+  if (config.design_resolution_fix) {
+    debugPrintf("patches: applying design_resolution_fix\n");
+    apply_patches(mod, g_design_resolution_patches, PATCH_COUNT(g_design_resolution_patches));
   }
 }
 

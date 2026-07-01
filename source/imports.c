@@ -230,62 +230,31 @@ static int clock_gettime_fake(int clk, struct timespec *tp) {
 
 // ---------------------------------------------------------------------------
 // frame pacing
-// cocos2d-x 3.14.1's Director::calculateDeltaTime() derives the per-frame delta
-// time from a single gettimeofday() sample each frame; everything (movement,
-// scrolling, animation) is scaled by that delta. Frame-time logging shows the
-// field maps run at a jittery ~43-58fps (each frame ~17-29ms, not a locked 60),
-// so the raw per-frame delta swings several ms frame-to-frame. On 2D maps that
-// swing is invisible on one axis but very visible scrolling diagonally, because
-// X and Y round sub-pixel differently each frame -> the "diagonal stutter".
 //
-// We can't make the engine render at 60 (that's GPU bound -- overclock or lower
-// the resolution), but we can stop the *delta* from jittering: we hand the
-// engine a virtual clock whose per-frame step is a low-passed (EMA) version of
-// the real frame time. That tracks the true average frame rate (no slow-motion
-// drift) while smoothing the 17<->29ms wobble into a steady step, so motion is
-// uniform per displayed frame. A long gap (load/pause/scene build) is clamped to
-// a single frame so the world never lurches across a 100ms+ spike. Same-frame
-// re-queries are ignored; other gettimeofday callers (timestamps/RNG) only need
-// coarse wall time, which the virtual clock still tracks closely between spikes.
+// Frame-time jitter (Director's own per-frame delta swinging several ms
+// frame-to-frame) is handled properly by the fixed_timestep patch group in
+// patches.h, which overwrites Director::drawScene / calculateDeltaTime's
+// _deltaTime store directly with a constant 1/60 -- a single, deterministic
+// intervention at the one place that actually needs it.
+//
+// This used to also be "fixed" here, at the gettimeofday() import level, with
+// an EMA-smoothed virtual clock. That approach was wired as the replacement
+// for every gettimeofday() call the engine makes -- not just Director's --
+// which is the problem: its smoothing state (virt/last_real/smooth) advances
+// on *any* call arriving >=2ms after the previous one, from *any* caller. If
+// more than one subsystem calls gettimeofday() independently within the same
+// real frame (e.g. a cutscene/audio-visual timing path, separate from
+// Director's own per-frame sample), each such call ticks the shared virtual
+// clock forward again, so it runs measurably faster than real time. That's
+// why the intro's game-rendered sequence (timed against this clock) used to
+// finish before its background song (played on a real, unaffected audio
+// clock) -- not a tuning problem, a structural one with a shared clock and
+// multiple uncoordinated callers.
+//
+// Now a plain passthrough: real time in, real time out. Director's own dt is
+// handled by the binary patch instead.
 static int gettimeofday_paced(struct timeval *tv, void *tz) {
-  (void)tz;
-  struct timeval real;
-  gettimeofday(&real, NULL);
-  if (!tv) return 0;
-
-  const double VS  = 1.0 / 60.0;                                   // vsync period
-  const double now = (double)real.tv_sec + (double)real.tv_usec / 1e6;
-
-  static int    inited    = 0;
-  static double virt      = 0.0;   // smoothed time handed to the engine
-  static double last_real = 0.0;   // real time at the previous frame sample
-  static double smooth    = 1.0 / 60.0; // low-passed per-frame delta
-
-  if (!inited) {
-    inited = 1;
-    virt = now;
-    last_real = now;
-  } else if (now - last_real >= 0.002) {
-    // a genuine new frame (ignore same-frame re-queries < 2ms apart)
-    double dt = now - last_real;
-    last_real = now;
-    if (dt > 0.10) {
-      // load/pause spike: advance one nominal frame so motion doesn't teleport,
-      // and reset the filter to the real cadence on the far side of the gap.
-      virt   += VS;
-      smooth  = VS;
-    } else {
-      // EMA low-pass: ~5-frame time constant kills the frame-to-frame jitter
-      // while still following the real average frame rate.
-      smooth = smooth * 0.80 + dt * 0.20;
-      virt  += smooth;
-    }
-  }
-
-  tv->tv_sec  = (time_t)virt;
-  long usec   = (long)((virt - (double)(time_t)virt) * 1e6);
-  tv->tv_usec = usec < 0 ? 0 : (usec > 999999 ? 999999 : usec);
-  return 0;
+  return gettimeofday(tv, tz);
 }
 
 // dlsym: cocos probes GL/EGL extensions through it. Resolve via eglGetProcAddress
@@ -340,6 +309,232 @@ static void glTexImage2D_guard(GLenum target, GLint level, GLint internalformat,
   }
   glTexImage2D(target, level, internalformat, width, height, border, format, type, pixels);
 }
+
+// ---------------------------------------------------------------------------
+// DIAG_VERTS -- capture the ACTUAL vertex/UV data the engine hands the GPU, to
+// settle whether the scroll shimmer is fractional geometry or fractional UV.
+// Self-contained: writes gl_diag.log next to config.ini. Flip to 0 to remove.
+//
+// cocos2d sprites upload quads as V3F_C4B_T2F: 4 verts x 24 bytes each =
+//   pos.x pos.y pos.z (3 float, 12B) | color RGBA (4 u8, 4B) | u v (2 float, 8B).
+// Every tile/character/UI quad goes through glBufferData / glBufferSubData.
+//
+// For each vertex we check whether the POSITION has a fractional part (it should
+// be a whole screen/point coord if geometry is clean) and whether the UV is
+// texel-aligned. A periodic summary + a few concrete offenders is logged:
+//   verts: uploads=.. quads=.. frac_pos=.. frac_uv=..
+//     vert frac: pos(100.500, 72.000) uv(0.13379, 0.00000)
+//
+// Decisive:
+//   frac_pos > 0 while scrolling  => shimmer is fractional GEOMETRY at the GPU.
+//   frac_pos == 0, frac_uv > 0    => geometry clean, fraction is in the UVs.
+//   both == 0                     => not in per-quad data at all.
+// ---------------------------------------------------------------------------
+#define PIXEL_SNAP_TEST 0
+#define DIAG_VERTS 0
+#if DIAG_VERTS
+static void vd_log(const char *fmt, ...) {
+  FILE *f = fopen("gl_diag.log", "a");
+  if (!f) return;
+  va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
+  fclose(f);
+}
+
+static unsigned s_vd_uploads = 0;
+static unsigned s_vd_total_quads = 0;
+static unsigned s_vd_frac_pos = 0;
+static unsigned s_vd_frac_uv  = 0;
+static int      s_vd_examples = 0;
+
+static int vd_is_frac(float v) {
+  float r = v - (float)floor((double)v);
+  return (r > 0.01f && r < 0.99f);
+}
+
+static void vd_scan(const void *data, long size) {
+  if (!data || size < 24) return;
+  const unsigned char *p = (const unsigned char *)data;
+  long nverts = size / 24;
+  if (nverts < 3) return;
+  if (nverts > 4096) nverts = 4096;
+
+  for (long i = 0; i < nverts; i++) {
+    const unsigned char *v = p + i * 24;
+    float px, py, u, uv_v;
+    memcpy(&px,   v + 0,  4);
+    memcpy(&py,   v + 4,  4);
+    memcpy(&u,    v + 16, 4);
+    memcpy(&uv_v, v + 20, 4);
+
+    if (px < -8000 || px > 8000 || py < -8000 || py > 8000) continue;
+    if (u < -0.01f || u > 1.01f || uv_v < -0.01f || uv_v > 1.01f) continue;
+
+    s_vd_total_quads++;
+    int fp = (vd_is_frac(px) || vd_is_frac(py));
+
+    int fu = 0;
+    {
+      float a = u * 864.0f,  b = uv_v * 448.0f;
+      float c = u * 2048.0f, d = uv_v * 2048.0f;
+      int al = (vd_is_frac(a) || vd_is_frac(b));
+      int cl = (vd_is_frac(c) || vd_is_frac(d));
+      fu = (al && cl);
+    }
+    if (fp) s_vd_frac_pos++;
+    if (fu) s_vd_frac_uv++;
+
+    if (fp && s_vd_examples < 12) {
+      s_vd_examples++;
+      vd_log("  vert frac: pos(%.3f, %.3f) uv(%.5f, %.5f)\n", px, py, u, uv_v);
+    }
+  }
+}
+
+static void vd_tick(void) {
+  s_vd_uploads++;
+  if (s_vd_uploads % 120 == 0) {
+    vd_log("verts: uploads=%u quads=%u frac_pos=%u frac_uv=%u\n",
+           s_vd_uploads, s_vd_total_quads, s_vd_frac_pos, s_vd_frac_uv);
+    s_vd_examples = 0;
+  }
+}
+
+#if !PIXEL_SNAP_TEST
+static void glBufferData_diag(GLenum target, GLsizeiptr size,
+                              const void *data, GLenum usage) {
+  if (target == GL_ARRAY_BUFFER && data && size >= 24)
+    vd_scan(data, (long)size);
+  vd_tick();
+  glBufferData(target, size, data, usage);
+}
+
+static void glBufferSubData_diag(GLenum target, GLintptr offset,
+                                 GLsizeiptr size, const void *data) {
+  if (target == GL_ARRAY_BUFFER && data && size >= 24)
+    vd_scan(data, (long)size);
+  vd_tick();
+  glBufferSubData(target, offset, size, data);
+}
+#endif
+#endif
+
+// ---------------------------------------------------------------------------
+// PIXEL_SNAP_TEST -- decisive diagnostic patch, NOT a proposed permanent fix.
+//
+// gl_diag.log proved a large fraction of sprite/tile vertex positions reach
+// the GPU with a non-integer screen coordinate, even though every code path
+// traced by hand in libchrono.so computes clean integers. Rather than keep
+// hunting for the one place a fraction enters, this intercepts the same
+// vertex uploads DIAG_VERTS already reads and forcibly rounds every vertex's
+// X/Y to the nearest whole pixel before it reaches the GPU -- regardless of
+// which code path produced the fraction.
+//
+// This is a blunt instrument on purpose: if the shimmer disappears with this
+// on, that's decisive proof the cause is fractional vertex geometry (broadly,
+// not tied to one function), and a real, scoped fix becomes worth writing.
+// If the shimmer is UNCHANGED, fractional vertex positions are not (solely)
+// the cause, and the search should move to texture sampling / rasterization
+// instead. Either answer ends a category of guessing.
+//
+// Known side effects while testing (expected, not corruption):
+//   - Anything that was using its half-pixel offset on purpose (odd-width
+//     sprites center-anchored) snaps by <1px -- usually invisible.
+//   - Text/UI kerning may look very slightly different.
+//   - Uses a static scratch buffer (single GL submission thread; gl_threaded
+//     mode still serializes actual GL calls onto one thread in this engine).
+// ---------------------------------------------------------------------------
+#if PIXEL_SNAP_TEST
+// 65536 verts (16384 quads, 1.5MB) -- comfortably covers any single
+// glBufferData/glBufferSubData call this engine is likely to make, including
+// the field's full batched tile layer. The previous 4096-vert (1024-quad)
+// cap was silently exceeded by real field content, so snap_positions() was
+// returning the ORIGINAL untouched buffer for exactly the geometry that
+// matters -- title/menu screens (small buffers) looked "fixed" in the log,
+// gameplay never was. That's why the in-game test showed no change: it
+// never actually ran on the field.
+static unsigned char s_snap_scratch[65536 * 24];
+
+static int snap_has_frac(const unsigned char *p, long nverts) {
+  for (long i = 0; i < nverts; i++) {
+    const unsigned char *v = p + i * 24;
+    float px, py;
+    memcpy(&px, v + 0, 4);
+    memcpy(&py, v + 4, 4);
+    if (px >= -8000 && px <= 8000 && px != roundf(px)) return 1;
+    if (py >= -8000 && py <= 8000 && py != roundf(py)) return 1;
+  }
+  return 0;
+}
+
+// Returns a pointer to (possibly) modified data, or the original pointer if
+// this buffer doesn't look like a V3F_C4B_T2F sprite-quad upload, is too
+// large for the scratch buffer (logged so we'd KNOW if that's happening
+// again), or already has no fractional positions (fast path -- skips the
+// copy entirely, which is most menu/UI/static geometry).
+static const void *snap_positions(const void *data, long size) {
+  if (!data || size < 24) return data;
+  long nverts = size / 24;
+  if (nverts < 3) return data;
+
+  const unsigned char *src = (const unsigned char *)data;
+  float px0, py0;
+  memcpy(&px0, src + 0, 4);
+  memcpy(&py0, src + 4, 4);
+  if (px0 < -8000 || px0 > 8000 || py0 < -8000 || py0 > 8000) return data;
+
+  if (!snap_has_frac(src, nverts)) return data;  // already clean, skip copy
+
+  if (size > (long)sizeof(s_snap_scratch)) {
+    #if DIAG_VERTS
+    static int warned = 0;
+    if (!warned) { warned = 1; vd_log("snap: buffer too large to snap (%ld bytes, %ld verts) -- NOT snapped\n", size, nverts); }
+    #endif
+    return data;
+  }
+
+  memcpy(s_snap_scratch, data, (size_t)size);
+  unsigned char *dst = s_snap_scratch;
+  for (long i = 0; i < nverts; i++) {
+    unsigned char *v = dst + i * 24;
+    float px, py;
+    memcpy(&px, v + 0, 4);
+    memcpy(&py, v + 4, 4);
+    if (px >= -8000 && px <= 8000) px = roundf(px);
+    if (py >= -8000 && py <= 8000) py = roundf(py);
+    memcpy(v + 0, &px, 4);
+    memcpy(v + 4, &py, 4);
+  }
+  return s_snap_scratch;
+}
+
+static void glBufferData_snap(GLenum target, GLsizeiptr size,
+                              const void *data, GLenum usage) {
+  const void *use = data;
+  if (target == GL_ARRAY_BUFFER && data && size >= 24)
+    use = snap_positions(data, (long)size);
+#if DIAG_VERTS
+  // Scan the buffer we're ACTUALLY uploading (post-snap), not the original
+  // input -- otherwise the log can never show whether snapping engaged.
+  if (target == GL_ARRAY_BUFFER && use && size >= 24)
+    vd_scan(use, (long)size);
+  vd_tick();
+#endif
+  glBufferData(target, size, use, usage);
+}
+
+static void glBufferSubData_snap(GLenum target, GLintptr offset,
+                                 GLsizeiptr size, const void *data) {
+  const void *use = data;
+  if (target == GL_ARRAY_BUFFER && data && size >= 24)
+    use = snap_positions(data, (long)size);
+#if DIAG_VERTS
+  if (target == GL_ARRAY_BUFFER && use && size >= 24)
+    vd_scan(use, (long)size);
+  vd_tick();
+#endif
+  glBufferSubData(target, offset, size, use);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // import table
@@ -784,8 +979,16 @@ DynLibFunction dynlib_functions[] = {
   { "glBlendEquationSeparate", (uintptr_t)&glBlendEquationSeparate },
   { "glBlendFunc", (uintptr_t)&glBlendFunc },
   { "glBlendFuncSeparate", (uintptr_t)&glBlendFuncSeparate },
+#if PIXEL_SNAP_TEST
+  { "glBufferData", (uintptr_t)&glBufferData_snap },
+  { "glBufferSubData", (uintptr_t)&glBufferSubData_snap },
+#elif DIAG_VERTS
+  { "glBufferData", (uintptr_t)&glBufferData_diag },
+  { "glBufferSubData", (uintptr_t)&glBufferSubData_diag },
+#else
   { "glBufferData", (uintptr_t)&glBufferData },
   { "glBufferSubData", (uintptr_t)&glBufferSubData },
+#endif
   { "glCheckFramebufferStatus", (uintptr_t)&glCheckFramebufferStatus },
   { "glClear", (uintptr_t)&glClear },
   { "glClearColor", (uintptr_t)&glClearColor },

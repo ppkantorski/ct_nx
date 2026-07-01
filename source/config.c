@@ -44,6 +44,8 @@
   CONFIG_VAR_INT(remove_mobile_ui); \
   CONFIG_VAR_INT(cursor_fix); \
   CONFIG_VAR_INT(remove_bilinear_filter); \
+  CONFIG_VAR_INT(fixed_timestep); \
+  CONFIG_VAR_INT(design_resolution_fix); \
   CONFIG_COMMENT("--- Input / controller ---"); \
   CONFIG_VAR_INT(native_controller); \
   CONFIG_VAR_INT(controller_glyphs); \
@@ -100,6 +102,8 @@ static void set_defaults(void) {
   config.native_controller = 1;    // native controller input -> Switch-button prompts
   config.controller_glyphs = 1;    // force <BTN_*> dialogue tags to the pad glyph set
   config.fix_diagonal_movement = 1; // smooth diagonal movement (matches cardinal speed)
+  config.fixed_timestep = 1;        // constant 1/60 dt -> removes dt-jitter drift (anim/audio sync)
+  config.design_resolution_fix = 1; // 568x320 -> 640x360 design res -> integer scale, kills motion shimmer
   strlcpy(config.mods_dir, "mods", sizeof(config.mods_dir)); // .ctp mod packs folder
 }
 

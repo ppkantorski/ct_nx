@@ -141,6 +141,43 @@ typedef struct {
   //                          target every frame and reads as a stutter.
   //                          Pure visual/feel fix; no save-data impact.
   int fix_diagonal_movement;
+  // fixed_timestep -- 1 = force cocos2d's per-frame delta (Director::_deltaTime)
+  //                   to a constant 1/60s instead of the measured wall-clock gap.
+  //                   Vsync locks presentation to 60Hz, but the measured delta
+  //                   still jitters frame-to-frame, so anything timed off dt
+  //                   (Actions, scheduled callbacks, the intro movie's audio
+  //                   sync) can drift slightly out of step with real time.
+  //                   A constant step -- what this frame-based game actually
+  //                   wants -- removes that drift. NOTE: confirmed via testing
+  //                   that this does NOT fix the motion shimmer/scoot artifact
+  //                   -- that turned out to be a scale-alignment bug, fixed
+  //                   separately by design_resolution_fix below. Keep this on
+  //                   for its own real benefit (e.g. intro video/song no
+  //                   longer end out of sync). Patches Director::drawScene and
+  //                   ::calculateDeltaTime. Trade-off: on a sustained sub-60fps
+  //                   dip motion runs slightly slow rather than skipping (rare).
+  //                   See g_fixed_timestep_patches in patches.h for rationale.
+  int fixed_timestep;
+  // design_resolution_fix -- 1 = correct the cocos2d-x design resolution from
+  //                   leftover iPhone-5 boilerplate (568x320, aspect 1.775) to
+  //                   640x360 (exact 16:9). ROOT CAUSE FIX for the motion
+  //                   shimmer/scoot/thinning-fine-detail artifact, confirmed via
+  //                   scale_diag.log: 568x320 never divides evenly into any
+  //                   Switch panel (1280x720, 1920x1080, 2560x1440 all give a
+  //                   fractional mScaleX/mScaleY -- 2.253521...), so every
+  //                   layer -- field, sprites, menu text -- gets stretched by a
+  //                   non-integer factor and GL_NEAREST-samples a scrolling,
+  //                   per-frame-shifting position, which reads as scoot/shimmer
+  //                   in motion and clean at rest. 640x360 divides every Switch
+  //                   resolution exactly (2x/3x/4x), so the scale is always a
+  //                   whole number with no further patch needed downstream.
+  //                   Supersedes the old integer_scale_fix idea (rounding the
+  //                   scale after the fact only shifted the zoom level without
+  //                   fixing the input). Trade-off: shows ~12% more of the
+  //                   world per screen edge (a small, permanent zoom-out);
+  //                   sprite/UI pixel density is unchanged. See
+  //                   g_design_resolution_patches in patches.h.
+  int design_resolution_fix;
   // Mod pack directory. Place .ctp files (ChronoMod-compatible Chrono Trigger
   // Patch archives) here and they will be applied to resources.bin at startup
   // without touching the original file. Paths are relative to the install
