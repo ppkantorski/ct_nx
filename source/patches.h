@@ -629,10 +629,224 @@ static const PatchEntry g_fixed_timestep_patches[] = {
 //     pixel density is unaffected -- this is a scale-alignment fix, not a
 //     resize -- only the visible margin changes slightly.
 // ---------------------------------------------------------------------------
-static const PatchEntry g_design_resolution_patches[] = {
-  P_RAW(0x641c34, 0x52a881c8, 0x52a88408, "AppDelegate init: mov w8,#0x44200000 (design width 568.0 -> 640.0)"),
-  P_RAW(0x641c38, 0x52a87409, 0x52a87689, "AppDelegate init: mov w9,#0x43b40000 (design height 320.0 -> 360.0)"),
+// ---------------------------------------------------------------------------
+// Design resolution fix, table-wide + config-driven.
+//
+// The game does NOT have one design resolution: a static initializer at
+// 0x641c00.. builds an aspect-bucketed TABLE of candidate design Sizes --
+// (568x320) 16:9, (480x360) 4:3, (568x340) 16:10, (1680x720) ultrawide --
+// and a runtime picker selects from it on every surface event (boot, dock,
+// undock). Patching only the 16:9 entry (all earlier builds) left the picker
+// free to apply other entries after resize events, producing the observed
+// boot-vs-redock inconsistency and, in one state, width from one entry with
+// height from another (480x360 -> scaleX=4 / scaleY=3 at 1080p: uniform
+// widths, broken heights -- the "rectangles").
+//
+// Fix: stamp EVERY entry in the table with the same (w,h), so the picker's
+// choice is irrelevant. Values are config-driven per mode (see config.h) so
+// the scale/framing trade-off can be A/B'd from config.ini without rebuilds.
+// The (568x340) entry's width register reuses the 16:9 entry's (s8), so only
+// its height instruction exists to patch -- width follows automatically.
+// ---------------------------------------------------------------------------
+
+// Encode: movz w<rd>, #(top 16 bits of float v), lsl #16
+static uint32_t movz_topf(int rd, float v) {
+  union { float f; uint32_t u; } x; x.f = v;
+  return 0x52A00000u | ((x.u >> 16) << 5) | (uint32_t)rd;
+}
+
+static void apply_design_resolution(so_module *mod, float w, float h) {
+  static const struct { uint32_t va; int rd; float oldv; int is_h; } sites[] = {
+    { 0x641c34, 8,  568.0f, 0 },  // 16:9 entry, width
+    { 0x641c38, 9,  320.0f, 1 },  // 16:9 entry, height
+    { 0x641c4c, 8,  480.0f, 0 },  // 4:3 entry, width
+    { 0x641c50, 9,  360.0f, 1 },  // 4:3 entry, height
+    { 0x641c68, 8,  340.0f, 1 },  // 16:10 entry, height (width = 16:9 width via s8)
+    { 0x641c80, 8, 1680.0f, 0 },  // ultrawide entry, width
+    { 0x641c84, 9,  720.0f, 1 },  // ultrawide entry, height
+  };
+  PatchEntry e[7];
+  for (int i = 0; i < 7; i++) {
+    e[i].sym_name  = NULL;
+    e[i].func_off  = 0;
+    e[i].raw_vaddr = sites[i].va;
+    e[i].old_word  = movz_topf(sites[i].rd, sites[i].oldv);
+    e[i].new_word  = movz_topf(sites[i].rd, sites[i].is_h ? h : w);
+    e[i].desc      = "design resolution table entry (unified per-mode value)";
+  }
+  apply_patches(mod, e, 7);
+}
+
+// ---------------------------------------------------------------------------
+// 8.  game_area_width_fix
+//
+//     ROOT CAUSE of the non-square art pixels (squares wider than tall by
+//     ~1.127 = 640/568), measured three times from panel crops and invariant
+//     across handheld/docked and across every screen_width/height combination
+//     -- which is why hand-tuning the surface size could approach but never
+//     reach square: the error is upstream of both scaling stages.
+//
+//     AppDelegate::applicationDidFinishLaunching ends by constructing the
+//     global cocos2d::Rect  ctr::gameArea  (exported symbol _ZN3ctr8gameAreaE)
+//     at 0x641a54..0x641ac0. Its HEIGHT is adaptive (visibleSize.height
+//     based -- the same adaptive style as the field code's visH-320 and
+//     visH*192/320 math), but its WIDTH is the hardcoded float 568.0:
+//
+//         gameArea.width  = 568 - 2*visibleOrigin.x        (568 literal)
+//         gameArea.height = visibleSize.height - y_offset  (adaptive)
+//
+//     568 is the iPhone-5 design width the port was authored against. With
+//     the stock 568x320 design this rect exactly equals the visible area, so
+//     the mismatch is invisible on Android. With design_resolution_fix
+//     widening the design to 640x360, the game keeps laying the world out
+//     568 wide and fills the 640-wide screen with it: a 640/568 = 1.1268
+//     horizontal-only stretch. Vertical stays clean because the height side
+//     was adaptive all along -- matching the measurement exactly (vertical
+//     uniform, horizontal 6,6,5 / 4,4,4,5 patterns, ratio 1.123-1.133).
+//
+//     Fix: make the width adaptive the same way the height already is.
+//     visibleRect is on the stack at [sp+0x10..0x1f] at this point (sret of
+//     the getVisibleRect vtable call at 0x641a64; width at [sp+0x18] --
+//     the code itself loads it from there at 0x641a6c):
+//
+//       0x641a94  mov  w8,#0x440e0000 (568.0f) -> ldr s6,[sp,#0x18] (visW)
+//       0x641a98  fmov s6,w8                   -> nop
+//       0x641ab0  fadd s0,s3,s0 (x=2*ox+m-44)  -> fmov s0,s3 (x=origin.x)
+//
+//     giving gameArea = (origin.x, y, visW - 2*origin.x, h). Provably a
+//     NO-OP at the stock 568-wide design (origin.x=0: x 0->0, w 568->568),
+//     so it only takes effect exactly where the bug exists. w8 is dead
+//     between 0x641a98 and its next write at 0x641ac4, and s6 is unread
+//     between the new load and its consumption at 0x641aa8 (verified in
+//     disassembly). Encodings verified with aarch64-linux-gnu-as.
+//
+//     STATUS (on-device testing): patch applies and boots clean, but the
+//     field-map stretch was not visibly cured by it -- gameArea's 20 reader
+//     sites are UI/menu/world-map code, and the field pipeline appears to
+//     carry its OWN copy of the 568-era horizontal constants (hardcoded
+//     44/480 margin math in FieldMap::setScrollLimit at 0x570cec, vs its
+//     adaptive visH-based vertical math). Panel-crop measurement pending to
+//     confirm; if confirmed, the follow-up patch targets those field
+//     constants the same way. Keep this fix on regardless: it is the
+//     correct generalization for every gameArea consumer.
+// ---------------------------------------------------------------------------
+static const PatchEntry g_gamearea_patches[] = {
+  P_RAW(0x641a94, 0x52a881c8, 0xbd401be6,
+        "gameArea: width literal 568.0 -> ldr s6,[sp,#0x18] (visible width)"),
+  P_RAW(0x641a98, 0x1e270106, 0xd503201f,
+        "gameArea: fmov s6,w8 -> nop (s6 now loaded directly)"),
+  P_RAW(0x641ab0, 0x1e202860, 0x1e204060,
+        "gameArea: x = origin.x (fadd s0,s3,s0 -> fmov s0,s3)"),
 };
+
+// ---------------------------------------------------------------------------
+// 9.  field_pixel_perfect
+//
+//     Full-frame measurement (1280x720 screenshot, autocorrelation over the
+//     whole panel) pinned the field's art-pixel size to exactly 3.75 x
+//     3.3333 panel px -- ratio 9/8 -- with a visible world of 341.33 x 216
+//     art px. Those decode to the game's view-sizing formulas verbatim:
+//     216 = visibleHeight*192/320 (FieldMap::init -> [this+0x34c]) and
+//     341.33 = visibleWidth*256/480 (setScrollLimit). The port sizes its
+//     field view at 256 art px per 480 design units horizontally but 192
+//     per 320 vertically: densities 8/15 vs 3/5, unequal by exactly 9/8.
+//     The same formulas produce the same 9/8 on the original iPhone-5
+//     layout -- i.e. this is Square Enix's deliberate approximation of the
+//     SNES/CRT pixel aspect (true CRT: 8/7), not an accident. It is also
+//     why no design/surface/GL configuration could ever remove it.
+//
+//     This patch sets both densities to exactly 1/2 (numerators only:
+//     192 -> 160 = 320/2, 256 -> 240 = 480/2; the 320/480/-320/44 authored
+//     constants are left alone so every margin/limit expression stays
+//     dimensionally consistent). Result with the 640x360 design: the view
+//     becomes 320x180 art px -- 16:9 in art terms -- so art pixels are
+//     4x4 panel px in handheld and 6x6 docked: square AND integer in both
+//     modes, eliminating both the aspect stretch and the uneven
+//     tight/loose pixel-width pattern (the motion shimmer). The field
+//     camera is ~7%% tighter horizontally and ~17%% vertically than the
+//     CRT-style view; menus/UI do not use these formulas and are
+//     unaffected. All three vertical-density sites (init, setScrollLimit,
+//     the camera-follow at 0x608bf0) and the single horizontal site are
+//     patched together so view size, scroll limits and camera centering
+//     move coherently. Encodings verified with aarch64-linux-gnu-as.
+//
+//     CORRECTION (superseding the previous handoff note below): the rodata
+//     pair at 0x360b08 is NOT the blit-scale source. Symbol resolution
+//     (.dynsym) shows its two readers are FieldMap::onTouchMoved and
+//     FieldMap::onTouchEnded -- touch-drag delta / tap-to-tile hit-testing,
+//     mobile-only input code, never on the render path. That is exactly why
+//     patching it produced no display effect. It's left patched below
+//     anyway (harmless) purely so touch-drag math stays dimensionally
+//     consistent with the density patches above, on the off chance the
+//     touch screen is used in handheld mode.
+//
+//     The actual blit-scale source: FieldMap::makeField (0x57520c-0x576668)
+//     builds a child Node -- internally named "fieldmap" via an inlined
+//     8-byte string constant a few instructions earlier -- adds it as a
+//     child, stashes the pointer at field+0x3b8, and immediately calls
+//     Node::setScale(x,y) (vtable slot 0x90) on it with two HARD-CODED
+//     immediates: s0 = 1.875f via a single `fmov` (exactly representable in
+//     the 8-bit float-immediate encoding), s1 = 1.66667f assembled into w9
+//     via `mov`+`movk` (0x3FD55555, NOT exactly representable as an fmov
+//     immediate) then moved with `fmov s1, w9`. This is a third, previously
+//     unknown occurrence of the (1.875, 1.66667) ratio -- distinct from
+//     both the density formulas and the rodata pair above -- and it's
+//     never loaded from memory, which is why full-frame measurement showed
+//     H locked at 3.75 px/art through every prior patch: 1.875 * 2.0 =
+//     3.75 and 1.66667 * 2.0 = 3.33334 match the measured art-pixel size
+//     exactly, where the outer 2.0/3.0 is the handheld/docked content-scale
+//     factor applied downstream of this node. Setting both to 2.0 here
+//     composes to the same 4x4 handheld / 6x6 docked target as the density
+//     patches above, on the actual render path this time.
+//
+//     Patch replaces `mov w9,#0x5555` / `movk w9,#0x3fd5,lsl#16` with NOPs
+//     (the fmov-immediate form doesn't need the general register at all)
+//     and both `fmov` sites' encoded value with 2.0f's. Instruction count
+//     and addresses are unchanged, so nothing downstream shifts. Encodings
+//     verified with keystone (cross-checked against the original fmov
+//     #1.875 bytes) and re-disassembled after patching to confirm a clean
+//     `fmov s0,#2.0` / `fmov s1,#2.0` pair with no corruption of the
+//     neighboring `ldr`/`mov`/`blr` instructions.
+//
+//     NOT YET MEASURED ON HARDWARE -- apply and re-run the autocorrelation
+//     measurement to confirm 4.0000x4.0000 before trusting this comment.
+// ---------------------------------------------------------------------------
+static const PatchEntry g_field_pixel_perfect_patches[] = {
+  P_RAW(0x56d874, 0x52a86808, 0x52a86408, "init: view-height density 192/320 -> 160/320"),
+  P_RAW(0x570d0c, 0x52a86809, 0x52a86409, "setScrollLimit: vertical density 192 -> 160"),
+  P_RAW(0x608bf0, 0x52a86808, 0x52a86408, "camera-follow: vertical density 192 -> 160"),
+  P_RAW(0x570cfc, 0x52a87008, 0x52a86e08, "setScrollLimit: horizontal density 256 -> 240"),
+  // Touch-drag / hit-test converters only -- confirmed no display effect.
+  // Kept for touch-drag consistency; safe no-op for controller-only play.
+  P_RAW(0x360b08, 0x3ff00000, 0x40000000, "onTouchMoved/Ended: rodata view scale X: 1.875f -> 2.0f"),
+  P_RAW(0x360b0c, 0x3fd55555, 0x40000000, "onTouchMoved/Ended: rodata view scale Y: 1.66667f -> 2.0f"),
+  // The real fix: FieldMap::makeField's "fieldmap" node, setScale(1.875, 1.66667) -> setScale(2.0, 2.0).
+  P_RAW(0x5761fc, 0x528aaaa9, 0xd503201f, "makeField: mov w9,#0x5555 (dead, was s1 lo half) -> nop"),
+  P_RAW(0x576200, 0x1e2fd000, 0x1e201000, "makeField: fieldmap node setScale X: fmov s0,#1.875 -> #2.0"),
+  P_RAW(0x576208, 0x72a7faa9, 0xd503201f, "makeField: movk w9,#0x3fd5,lsl#16 (dead, was s1 hi half) -> nop"),
+  P_RAW(0x576210, 0x1e270121, 0x1e201001, "makeField: fieldmap node setScale Y: fmov s1,w9(1.66667) -> fmov s1,#2.0"),
+};
+
+// ---------------------------------------------------------------------------
+// The identical hard-coded (1.875, 1.66667) setScale(x,y) pattern also
+// appears, unpatched, at these WorldMap sites -- the overworld map screen
+// almost certainly has the exact same non-square art-pixel issue as the
+// field screens, via the same idiom (immediate-encoded fmov pair feeding
+// vtable slot 0x90). NOT enabled by default -- field_pixel_perfect was
+// scoped to the field only. Fold into g_field_pixel_perfect_patches (same
+// nop+fmov replacement shape as above, at these addresses) if/when the
+// overworld map is measured and confirmed to have the same 9/8 stretch:
+//   WorldMap::Init2          0x607c98 / 0x607c9c   (first  fieldmap-alike node)
+//   WorldMap::Init2          0x607db4 / 0x607db8   (second fieldmap-alike node)
+//   WorldMap::initWeatherMap 0x60840c / 0x608424
+//   WorldMap::exitMiniMap    0x609c28 / 0x609c2c
+// Deliberately NOT touching the other three occurrences found by the same
+// scan (BattleMenu::Proc 0x5b143c/0x5b15ec, AgeSelectScene::init 0x744264/
+// 0x744268, SpecialEventScene::init 0x777ed0/0x777ed4) -- no evidence yet
+// they're the same "low-res canvas stretched to fill the screen" idiom
+// rather than an unrelated coincidental reuse of the same ratio; patching
+// those blind risks warping unrelated UI/background art.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // The bilinear patches use pattern-search within the function body (as the
@@ -741,9 +955,23 @@ static inline void apply_game_patches(so_module *mod) {
     apply_patches(mod, g_fixed_timestep_patches, PATCH_COUNT(g_fixed_timestep_patches));
   }
 
+  if (config.field_pixel_perfect) {
+    debugPrintf("patches: applying field_pixel_perfect\n");
+    apply_patches(mod, g_field_pixel_perfect_patches, PATCH_COUNT(g_field_pixel_perfect_patches));
+  }
+
+  if (config.game_area_width_fix) {
+    debugPrintf("patches: applying game_area_width_fix\n");
+    apply_patches(mod, g_gamearea_patches, PATCH_COUNT(g_gamearea_patches));
+  }
+
   if (config.design_resolution_fix) {
-    debugPrintf("patches: applying design_resolution_fix\n");
-    apply_patches(mod, g_design_resolution_patches, PATCH_COUNT(g_design_resolution_patches));
+    // 640x360 stamped across the WHOLE aspect table, both modes: 2x at 720p
+    // handheld, 3x at 1080p docked -- the familiar framing. Table-wide
+    // stamping keeps it stable across boot/dock/undock (the game's runtime
+    // aspect picker can no longer swap entries).
+    debugPrintf("patches: design resolution 640x360 (all aspect-table entries)\n");
+    apply_design_resolution(mod, 640.0f, 360.0f);
   }
 }
 

@@ -178,6 +178,34 @@ typedef struct {
   //                   sprite/UI pixel density is unchanged. See
   //                   g_design_resolution_patches in patches.h.
   int design_resolution_fix;
+  // force_nearest -- 1 = rewrite every GL texture filter to NEAREST at the
+  //                   wrapper (glTexParameteri/f interception + stamping
+  //                   NEAREST at texture creation). Total coverage, unlike the
+  //                   remove_bilinear_filter binary patch, which cannot reach
+  //                   textures that rely on GL's default filters (default MAG
+  //                   filter is GL_LINEAR) such as the field composite
+  //                   buffers. A raw 1080p framebuffer screenshot proved the
+  //                   output was bilinear-upscaled -- the direct cause of the
+  //                   "squares aren't square / uneven widths / grey-blended
+  //                   edges" artifact. 0 = leave the game's filtering alone.
+  int force_nearest;
+  // game_area_width_fix -- 1 = make the global ctr::gameArea rect's WIDTH
+  // adaptive (visible width) instead of the hardcoded iPhone-5 568.0 it
+  // ships with. Its height was already adaptive; the asymmetry is the root
+  // cause of the measured 640/568 (~1.127) horizontal-only art-pixel
+  // stretch that no screen_width/height combination could cancel. Exact
+  // no-op when the design resolution is stock 568-wide, so safe to leave on.
+  // See patches.h section 8 for the full derivation. NOTE: boot-time
+  // binary patch -- changing this in config.ini requires a game relaunch;
+  // the live config reload deliberately does not (and cannot) re-patch.
+  int game_area_width_fix;
+  // field_pixel_perfect -- 1 = set the field view's design->art densities to
+  // exactly 1/2 on both axes (see patches.h section 9). View becomes 320x180
+  // art px: art pixels are square AND integer (4px handheld / 6px docked) in
+  // both modes -- no aspect stretch, no uneven pixel widths, no motion
+  // shimmer. 0 = the shipped CRT-style 9/8 wide-pixel presentation. Field
+  // camera only; menus/UI unaffected. Boot-time patch: relaunch to change.
+  int field_pixel_perfect;
   // Mod pack directory. Place .ctp files (ChronoMod-compatible Chrono Trigger
   // Patch archives) here and they will be applied to resources.bin at startup
   // without touching the original file. Paths are relative to the install

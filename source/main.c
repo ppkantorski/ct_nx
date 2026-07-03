@@ -88,6 +88,22 @@ static void check_syscalls(void) {
   if (envGetOwnProcessHandle() == INVALID_HANDLE) fatal_error("Own process handle is unavailable.");
 }
 
+// Live config reload (dev/tuning aid): the main loop stats config.ini every
+// CONFIG_POLL_INTERVAL_FRAMES frames rather than every single frame -- stat()
+// is a real filesystem syscall (unlike the in-memory appletGetOperationMode()
+// check next to it), and checking twice a second is still instant from a
+// human editing an Ultrahand slider. s_config_mtime is the mtime we last
+// acted on; see its initialization right after the first read_config() in
+// main() so the very first poll doesn't misfire.
+#define CONFIG_POLL_INTERVAL_FRAMES 30
+static time_t s_config_mtime = 0;
+// Debounce for the live reload: a change is only applied once the file's
+// mtime has been stable for two consecutive polls. Protects against reading
+// config.ini mid-write (Ultrahand's set-ini-val truncates + rewrites) and
+// coalesces slider-drag write storms into a single reload.
+static time_t s_config_mtime_pending = 0;
+static int    s_config_poll_ctr = 0;
+
 static void check_data(void) {
   struct stat st;
   if (stat(SO_NAME, &st) < 0)    fatal_error("Could not find\n%s.\nCheck your data files.", SO_NAME);
@@ -127,18 +143,17 @@ static void set_screen_size(AppletOperationMode mode) {
                                                      : config.screen_height_handheld;
 
   int w = panel_w, h = panel_h;
-  if (cfg_w > 0 && cfg_h > 0 && cfg_w <= 3840 && cfg_h <= 2160) {
-    // Only accept it if it scales the panel by the same whole integer on
-    // both axes -- e.g. panel 1920x1080 + cfg 3840x2160 (2x) is fine;
-    // cfg 2560x1440 against that same panel (4/3, non-integer) is not.
-    if (cfg_w % panel_w == 0 && cfg_h % panel_h == 0 &&
-        (cfg_w / panel_w) == (cfg_h / panel_h)) {
-      w = cfg_w; h = cfg_h;
-    } else {
-      debugPrintf("set_screen_size: config %dx%d is not an integer multiple of "
-                  "the real %dx%d panel -- using native panel size instead "
-                  "to avoid a compositor rescale.\n", cfg_w, cfg_h, panel_w, panel_h);
-    }
+  if (cfg_w >= 320 && cfg_h >= 180 && cfg_w <= 3840 && cfg_h <= 2160) {
+    // Honour ANY explicit value in range, whether or not it's an integer
+    // multiple of the real panel. Non-multiple values make the system
+    // compositor rescale our frame every frame (a soft/shimmery resample
+    // instead of a clean pixel-doubled one, per scale_diag.log) -- accepted
+    // here as the tradeoff for supporting arbitrary per-mode resolutions.
+    w = cfg_w; h = cfg_h;
+  } else if (cfg_w > 0 || cfg_h > 0) {
+    debugPrintf("set_screen_size: config %dx%d out of the 320x180-3840x2160 "
+                "range -- using native panel size %dx%d instead.\n",
+                cfg_w, cfg_h, panel_w, panel_h);
   }
   screen_width = w; screen_height = h;
 }
@@ -189,6 +204,12 @@ static int egl_init(void) {
 
   NWindow *win = nwindowGetDefault();
   nwindowSetDimensions(win, screen_width, screen_height);
+  // Explicitly pin the crop to the full new buffer. Crop is separate NWindow
+  // state from the dimensions: across dock/undock surface recreation a crop
+  // sized for the PREVIOUS buffer can persist, making the compositor present
+  // a mismatched sub-region rescaled to the display -- sharp but non-uniform
+  // pixels, identical in both modes, invisible to every in-game measurement.
+  nwindowSetCrop(win, 0, 0, screen_width, screen_height);
   s_surface = eglCreateWindowSurface(s_display, s_egl_config, win, NULL);
   if (!s_surface) { debugPrintf("egl: no surface\n"); return 0; }
 
@@ -213,18 +234,54 @@ static int egl_init(void) {
 // guaranteed to be allocated at the new size by construction. The EGLContext
 // is untouched -- a context is independent of any particular surface, so all
 // GL object state (textures, buffers, shaders) survives the swap intact.
+// last surface size that actually worked, for the egl_resize fallback below
+static int s_egl_good_w = 0, s_egl_good_h = 0;
+
 static int egl_resize(void) {
   eglMakeCurrent(s_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
   if (s_surface) { eglDestroySurface(s_display, s_surface); s_surface = EGL_NO_SURFACE; }
 
   NWindow *win = nwindowGetDefault();
-  nwindowSetDimensions(win, screen_width, screen_height);
-  s_surface = eglCreateWindowSurface(s_display, s_egl_config, win, NULL);
-  if (!s_surface) { debugPrintf("egl: resize - no surface\n"); return 0; }
 
-  eglMakeCurrent(s_display, s_surface, s_surface, s_context);
-  eglSwapInterval(s_display, 1);
-  return 1;
+  // Surface creation can fail transiently right after destroying the old
+  // surface (the compositor may still hold the old buffers). The previous
+  // version gave up on the first failure and returned with NO surface bound
+  // -- the game kept running but nothing was ever presented again: a
+  // permanent black screen. Now: retry the requested size a few times, then
+  // fall back to the last size that worked rather than end up surfaceless.
+  for (int attempt = 0; attempt < 5; attempt++) {
+    int w = screen_width, h = screen_height;
+    if (attempt >= 3 && s_egl_good_w > 0 &&
+        (s_egl_good_w != screen_width || s_egl_good_h != screen_height)) {
+      w = s_egl_good_w;  // final attempts: last-known-good fallback
+      h = s_egl_good_h;
+    }
+    nwindowSetDimensions(win, w, h);
+    // Explicitly pin the crop to the full new buffer. Crop is separate
+    // NWindow state from the dimensions: across dock/undock surface
+    // recreation a crop sized for the PREVIOUS buffer can persist, making
+    // the compositor present a mismatched sub-region rescaled to the
+    // display -- sharp but non-uniform pixels, identical in both modes,
+    // invisible to every in-game measurement.
+    nwindowSetCrop(win, 0, 0, w, h);
+    s_surface = eglCreateWindowSurface(s_display, s_egl_config, win, NULL);
+    if (s_surface) {
+      if (w != screen_width || h != screen_height) {
+        debugPrintf("egl: resize fell back to last-known-good %dx%d\n", w, h);
+        screen_width = w;   // keep the engine's idea of the size truthful
+        screen_height = h;
+      }
+      eglMakeCurrent(s_display, s_surface, s_surface, s_context);
+      eglSwapInterval(s_display, 1);
+      s_egl_good_w = w;
+      s_egl_good_h = h;
+      return 1;
+    }
+    debugPrintf("egl: resize attempt %d failed (%dx%d), retrying\n", attempt, w, h);
+    svcSleepThread(20ull * 1000 * 1000); // 20 ms for in-flight buffers to drain
+  }
+  debugPrintf("egl: resize - no surface after retries\n");
+  return 0;
 }
 
 static void egl_deinit(void) {
@@ -504,7 +561,7 @@ static void update_touch(void) {
 // libchrono.so build -- BuildID-matched). Pure diagnostic; no behavior
 // change. Remove or set to 0 once the numbers are in.
 // ---------------------------------------------------------------------------
-#define DIAG_SCALE 0
+#define DIAG_SCALE 1
 #if DIAG_SCALE
 static void diag_scale_dump(void) {
   static int done = 0;
@@ -575,6 +632,16 @@ int main(void) {
   read_config(CONFIG_NAME);
   write_config(CONFIG_NAME);
 
+
+  // Live config reload (dev/tuning aid): remember config.ini's mtime as of
+  // this initial load so the first poll in the main loop below doesn't
+  // mistake "file already existed" for "file just changed". See the
+  // s_config_mtime poll in the main loop for the actual reload.
+  {
+    struct stat st;
+    if (stat(CONFIG_NAME, &st) == 0) s_config_mtime = st.st_mtime;
+  }
+
   check_syscalls();
   check_data();
   set_screen_size(appletGetOperationMode());
@@ -619,6 +686,9 @@ int main(void) {
 
   if (!egl_init())
     fatal_error("Failed to create an OpenGL ES 2.0 context.");
+  // seed the resize fallback with the size that just worked
+  s_egl_good_w = screen_width;
+  s_egl_good_h = screen_height;
 
   // --- load both modules: libc++_shared first so libchrono's std imports bind ---
   if (so_load(&cpp_mod, SOCPP_NAME, heap_so_base, heap_so_limit) < 0)
@@ -821,6 +891,7 @@ int main(void) {
   // create the GLView + run applicationDidFinishLaunching (the engine's entry)
   e_nativeInit(fake_env, thiz, screen_width, screen_height);
 
+
   // input
   padConfigureInput(8, HidNpadStyleSet_NpadStandard);
   padInitializeAny(&pad);
@@ -849,6 +920,42 @@ int main(void) {
           // recomputes the viewport/scale factor against the (unchanged)
           // design resolution -- the same path Android uses for rotation.
           e_nativeOnSurfaceChanged(fake_env, thiz, screen_width, screen_height);
+      }
+    }
+
+    // Live config reload (dev/tuning aid): pick up screen_width/height edits
+    // made on disk -- e.g. from an Ultrahand/overlay config editor -- without
+    // relaunching. Re-stat every CONFIG_POLL_INTERVAL_FRAMES frames; on a
+    // change, re-parse config.ini and push the new size through the exact
+    // same set_screen_size()/egl_resize()/nativeOnSurfaceChanged() path the
+    // dock/undock handler above uses, so there's only one resize path to
+    // trust. Note read_config() re-reads every field (language etc. too),
+    // not just the screen ones -- fine for a tuning tool, but worth knowing
+    // if you're editing other keys live at the same time.
+    if (++s_config_poll_ctr >= CONFIG_POLL_INTERVAL_FRAMES) {
+      s_config_poll_ctr = 0;
+      struct stat st;
+      if (stat(CONFIG_NAME, &st) == 0 && st.st_mtime != s_config_mtime) {
+        if (st.st_mtime != s_config_mtime_pending) {
+          // first sighting of this mtime: wait one poll for the write to
+          // settle before parsing (see s_config_mtime_pending above)
+          s_config_mtime_pending = st.st_mtime;
+        } else {
+          // stable across two polls: safe to apply
+          s_config_mtime = st.st_mtime;
+          s_config_mtime_pending = 0;
+          const int old_w = screen_width, old_h = screen_height;
+          read_config(CONFIG_NAME);
+          set_screen_size(cur_mode);
+          // Only touch the EGL surface if the effective size really changed.
+          // Edits to non-screen keys (patch toggles, font settings, ...)
+          // must NOT churn a surface destroy/recreate cycle -- needless
+          // recreations are both pointless and the main black-screen risk.
+          if (screen_width != old_w || screen_height != old_h) {
+            if (egl_resize() && e_nativeOnSurfaceChanged)
+              e_nativeOnSurfaceChanged(fake_env, thiz, screen_width, screen_height);
+          }
+        }
       }
     }
 

@@ -46,6 +46,9 @@
   CONFIG_VAR_INT(remove_bilinear_filter); \
   CONFIG_VAR_INT(fixed_timestep); \
   CONFIG_VAR_INT(design_resolution_fix); \
+  CONFIG_VAR_INT(force_nearest); \
+  CONFIG_VAR_INT(game_area_width_fix); \
+  CONFIG_VAR_INT(field_pixel_perfect); \
   CONFIG_COMMENT("--- Input / controller ---"); \
   CONFIG_VAR_INT(native_controller); \
   CONFIG_VAR_INT(controller_glyphs); \
@@ -103,7 +106,10 @@ static void set_defaults(void) {
   config.controller_glyphs = 1;    // force <BTN_*> dialogue tags to the pad glyph set
   config.fix_diagonal_movement = 1; // smooth diagonal movement (matches cardinal speed)
   config.fixed_timestep = 1;        // constant 1/60 dt -> removes dt-jitter drift (anim/audio sync)
-  config.design_resolution_fix = 1; // 568x320 -> 640x360 design res -> integer scale, kills motion shimmer
+  config.design_resolution_fix = 1;   // stamp the whole design-resolution aspect table (640x360, both modes)
+  config.force_nearest = 1;           // enforce NEAREST on every texture at the GL wrapper: kills the bilinear upscale proven by the framebuffer screenshot
+  config.game_area_width_fix = 1;     // adaptive ctr::gameArea width (UI-layer consumers); no-op at stock 568 design
+  config.field_pixel_perfect = 1;     // square+integer field pixels (320x180 view); boot-time patch, relaunch to change
   strlcpy(config.mods_dir, "mods", sizeof(config.mods_dir)); // .ctp mod packs folder
 }
 
