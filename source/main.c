@@ -561,7 +561,7 @@ static void update_touch(void) {
 // libchrono.so build -- BuildID-matched). Pure diagnostic; no behavior
 // change. Remove or set to 0 once the numbers are in.
 // ---------------------------------------------------------------------------
-#define DIAG_SCALE 1
+#define DIAG_SCALE 0
 #if DIAG_SCALE
 static void diag_scale_dump(void) {
   static int done = 0;
@@ -987,6 +987,13 @@ int main(void) {
     }
 
     e_nativeRender(fake_env);
+    // TEMPORARY -- drains the scroll-centering diagnostic snapshot that
+    // apply_field_scroll_debug_log() (patches.h) writes into homebrew
+    // memory every time FieldMap::Scroll() runs. Safe to call every frame
+    // even when the hook isn't installed (s_scroll_dbg_snap.seq just stays
+    // 0 forever, so nothing prints). Remove alongside the patches.h hook
+    // once the centering drift is diagnosed.
+    scroll_dbg_drain();
     // If a movie just finished, movie_post_render presents the last video frame
     // in place of whatever the engine drew this cycle (which may be black during
     // the scene transition). Once the hold count is exhausted it restores GL

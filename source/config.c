@@ -49,6 +49,7 @@
   CONFIG_VAR_INT(force_nearest); \
   CONFIG_VAR_INT(game_area_width_fix); \
   CONFIG_VAR_INT(field_pixel_perfect); \
+  CONFIG_VAR_FLOAT(field_zoom); \
   CONFIG_COMMENT("--- Input / controller ---"); \
   CONFIG_VAR_INT(native_controller); \
   CONFIG_VAR_INT(controller_glyphs); \
@@ -110,6 +111,7 @@ static void set_defaults(void) {
   config.force_nearest = 1;           // enforce NEAREST on every texture at the GL wrapper: kills the bilinear upscale proven by the framebuffer screenshot
   config.game_area_width_fix = 1;     // adaptive ctr::gameArea width (UI-layer consumers); no-op at stock 568 design
   config.field_pixel_perfect = 1;     // square+integer field pixels (320x180 view); boot-time patch, relaunch to change
+  config.field_zoom = 2.0f;           // 4x4 handheld / 6x6 art-px (original field_pixel_perfect framing); lower = more map visible
   strlcpy(config.mods_dir, "mods", sizeof(config.mods_dir)); // .ctp mod packs folder
 }
 

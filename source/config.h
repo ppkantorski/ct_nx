@@ -206,6 +206,51 @@ typedef struct {
   // shimmer. 0 = the shipped CRT-style 9/8 wide-pixel presentation. Field
   // camera only; menus/UI unaffected. Boot-time patch: relaunch to change.
   int field_pixel_perfect;
+  // field_zoom -- camera zoom level for the field screen. Only used while
+  // field_pixel_perfect is on. Two things move together when you change
+  // this (patches.h: apply_field_view_zoom + apply_field_zoom):
+  //   1. The VIEW (how much of the map is captured -- FieldMap::init and
+  //      setScrollLimit): view_art_px = 640x360 / zoom.
+  //   2. The BLIT scale (the "fieldmap" node's setScale, on top of the
+  //      outer 2x-handheld/3x-docked display scale from
+  //      design_resolution_fix): the node is drawn at view_art_px * zoom.
+  // Those two are reciprocal by construction, so the LOGICAL drawn size is
+  // always exactly 640x360 design units.
+  //
+  // IMPORTANT, STILL-OPEN CAVEAT: the field background isn't drawn live --
+  // it's rendered once per scroll step into five fixed-size 432x224 art-px
+  // RenderTextures allocated in FieldMap::makeField, sized for the stock
+  // 320x180 view with a fixed scroll-ahead margin. #1/#2 above resize the
+  // *logical* view and blit scale correctly, but NOT that physical texture,
+  // which patches.h does not yet touch (would require rewriting ~40
+  // interdependent constants inside the 2700-instruction FieldMap::Scroll
+  // function -- tracked, not yet done). Net effect: the "always fills the
+  // screen" claim above only holds while the requested view still fits
+  // inside that fixed 432x224 texture, i.e.
+  //     zoom >= max(640/432, 360/224) = ~1.61
+  // Below ~1.61 the texture itself becomes the bottleneck: you'll see the
+  // same fixed-size patch of map, anchored to a corner, with black in the
+  // remaining screen area, rather than more map. Stay at 1.65+ for a safe
+  // margin. Going lower is the actual "see more map" feature Patrick wants
+  // and needs the Scroll-function rewrite above before it'll work right.
+  //
+  // Final art-pixel size on screen = field_zoom * 2 (handheld) and
+  // field_zoom * 3 (docked). Default 2.0 reproduces the original shipped
+  // field_pixel_perfect framing (4x4 handheld / 6x6 docked).
+  //   Lower  = zoomed OUT (see more of the map, smaller on-screen tiles)
+  //   Higher = zoomed IN  (see less of the map, bigger on-screen tiles)
+  // Always renders square (X==Y), so it never stretches. But since
+  // gcd(2,3)=1, only WHOLE-NUMBER values keep the art-pixel size an exact
+  // integer -- and therefore free of the sub-pixel scroll shimmer the other
+  // patches above fix -- in BOTH handheld and docked at once:
+  //   2.0 -> 4x/6x (default), 3.0 -> 6x/9x, 4.0 -> 8x/12x ...
+  // (1.0 -> 2x/3x would also qualify but is below the ~1.61 floor above.)
+  // Non-integer values still render square/undistorted within the safe
+  // range, just without the shimmer-free guarantee in whichever mode it
+  // doesn't divide evenly for. One in-between value that DOES stay exact in
+  // both modes and clears the ~1.61 floor: 5/3 (~1.667 -> 3.333x/5x).
+  // Boot-time patch: relaunch to change.
+  float field_zoom;
   // Mod pack directory. Place .ctp files (ChronoMod-compatible Chrono Trigger
   // Patch archives) here and they will be applied to resources.bin at startup
   // without touching the original file. Paths are relative to the install

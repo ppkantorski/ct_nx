@@ -765,10 +765,21 @@ static const PatchEntry g_gamearea_patches[] = {
 //     tight/loose pixel-width pattern (the motion shimmer). The field
 //     camera is ~7%% tighter horizontally and ~17%% vertically than the
 //     CRT-style view; menus/UI do not use these formulas and are
-//     unaffected. All three vertical-density sites (init, setScrollLimit,
-//     the camera-follow at 0x608bf0) and the single horizontal site are
-//     patched together so view size, scroll limits and camera centering
-//     move coherently. Encodings verified with aarch64-linux-gnu-as.
+//     unaffected. The two vertical-density sites (init, setScrollLimit)
+//     and the single horizontal site (setScrollLimit) are patched
+//     together so view size and scroll limits move coherently. Encodings
+//     verified with aarch64-linux-gnu-as.
+//
+//     CORRECTION: a fourth site at 0x608bf0, previously patched here as a
+//     third "vertical-density"/"camera-follow" site, was mis-scoped. It
+//     resolves (via .dynsym) to WorldMap::update, not anything in
+//     FieldMap -- it's overworld tile-animation-timing math that
+//     coincidentally starts from the same 192.0f constant. It has been
+//     silently overwritten (192.0 -> 160.0, and later -> 320.0/zoom) by
+//     every build since the original fixed-value field_pixel_perfect,
+//     never validated against the overworld screen specifically. Dropped
+//     from this patch set entirely; it's no longer touched, so it stays
+//     at its original stock 192.0f in all configurations.
 //
 //     CORRECTION (superseding the previous handoff note below): the rodata
 //     pair at 0x360b08 is NOT the blit-scale source. Symbol resolution
@@ -799,33 +810,1142 @@ static const PatchEntry g_gamearea_patches[] = {
 //     composes to the same 4x4 handheld / 6x6 docked target as the density
 //     patches above, on the actual render path this time.
 //
-//     Patch replaces `mov w9,#0x5555` / `movk w9,#0x3fd5,lsl#16` with NOPs
-//     (the fmov-immediate form doesn't need the general register at all)
-//     and both `fmov` sites' encoded value with 2.0f's. Instruction count
-//     and addresses are unchanged, so nothing downstream shifts. Encodings
-//     verified with keystone (cross-checked against the original fmov
-//     #1.875 bytes) and re-disassembled after patching to confirm a clean
-//     `fmov s0,#2.0` / `fmov s1,#2.0` pair with no corruption of the
-//     neighboring `ldr`/`mov`/`blr` instructions.
+//     Instruction count and addresses are unchanged, so nothing downstream
+//     shifts. Encodings verified with keystone (cross-checked against the
+//     original fmov #1.875 bytes) and re-disassembled after patching to
+//     confirm a clean result with no corruption of the neighboring
+//     `ldr`/`mov`/`blr` instructions.
 //
-//     NOT YET MEASURED ON HARDWARE -- apply and re-run the autocorrelation
-//     measurement to confirm 4.0000x4.0000 before trusting this comment.
+//     CONFIRMED ON HARDWARE at zoom=2.0: autocorrelation measured exactly
+//     4.0000x4.0000 handheld / 6.0000x6.0000 docked.
+//
+// ---------------------------------------------------------------------------
+// field_zoom -- the makeField setScale value is config-driven (see config.h)
+// instead of a fixed 2.0, so you can trade a bit of "zoomed in" for more
+// visible map without giving up square pixels. All 4 instruction slots are
+// reused as a single general "load this float into w9, fmov both s0 and s1
+// from it" sequence, so any float works -- not just the handful directly
+// representable as an ARM64 fmov-immediate:
+//
+//   movz w9, #lo16(bits(zoom))
+//   movk w9, #hi16(bits(zoom)), lsl #16
+//   fmov s0, w9
+//   fmov s1, w9
+//
+// s0/s1 always get the SAME value, so the result is always square/uniform
+// (no X/Y stretch) for ANY zoom you pick -- that part of "uniform scaling"
+// holds unconditionally.
+//
+// The OTHER part -- exact integer art-pixel size with no motion shimmer --
+// depends on the outer display scale too, which design_resolution_fix pins
+// at exactly 2x in handheld and 3x in docked (screen / 640 design width).
+// Final art-px-per-screen-px = zoom * 2 (handheld) and zoom * 3 (docked).
+// Since gcd(2,3) = 1, the only values that make BOTH of those come out as
+// whole numbers are whole-number zoom values themselves:
+//   zoom=1 -> 2x handheld / 3x docked   (zoomed OUT: more map, smaller art)
+//   zoom=2 -> 4x handheld / 6x docked   (default, current shipped feel)
+//   zoom=3 -> 6x handheld / 9x docked   (zoomed IN)
+// Non-integer zoom (e.g. 1.5) still renders square, undistorted pixels --
+// it just isn't guaranteed to land on a whole screen-pixel boundary in both
+// modes, which can bring back the sub-pixel scroll shimmer in whichever
+// mode(s) it doesn't divide evenly for. If you only ever play in one mode,
+// a value that's merely a multiple of 1/2 (handheld) or 1/3 (docked) will
+// stay perfectly crisp in that mode alone.
 // ---------------------------------------------------------------------------
 static const PatchEntry g_field_pixel_perfect_patches[] = {
-  P_RAW(0x56d874, 0x52a86808, 0x52a86408, "init: view-height density 192/320 -> 160/320"),
-  P_RAW(0x570d0c, 0x52a86809, 0x52a86409, "setScrollLimit: vertical density 192 -> 160"),
-  P_RAW(0x608bf0, 0x52a86808, 0x52a86408, "camera-follow: vertical density 192 -> 160"),
-  P_RAW(0x570cfc, 0x52a87008, 0x52a86e08, "setScrollLimit: horizontal density 256 -> 240"),
+  // The 3 view-density sites (FieldMap::init view-height, setScrollLimit
+  // width+height) used to be hardcoded here (192->160, 256->240 -- the
+  // fixed 320x180-art-px view that only matches zoom=2.0). A 4th site
+  // (WorldMap::update, mislabeled "camera-follow") was patched here too in
+  // earlier builds; it's not part of FieldMap and has been removed -- see
+  // apply_field_view_zoom's header comment for the full story.
+  // They're now zoom-dependent -- see apply_field_view_zoom() below, called
+  // alongside apply_field_zoom() -- so the view (how much map is visible)
+  // always scales inversely with zoom (the blit density), keeping the
+  // rendered content pinned to exactly fill the 640x360 design canvas at
+  // ANY zoom setting. Fixing them here would fight that.
+  //
   // Touch-drag / hit-test converters only -- confirmed no display effect.
   // Kept for touch-drag consistency; safe no-op for controller-only play.
   P_RAW(0x360b08, 0x3ff00000, 0x40000000, "onTouchMoved/Ended: rodata view scale X: 1.875f -> 2.0f"),
   P_RAW(0x360b0c, 0x3fd55555, 0x40000000, "onTouchMoved/Ended: rodata view scale Y: 1.66667f -> 2.0f"),
-  // The real fix: FieldMap::makeField's "fieldmap" node, setScale(1.875, 1.66667) -> setScale(2.0, 2.0).
-  P_RAW(0x5761fc, 0x528aaaa9, 0xd503201f, "makeField: mov w9,#0x5555 (dead, was s1 lo half) -> nop"),
-  P_RAW(0x576200, 0x1e2fd000, 0x1e201000, "makeField: fieldmap node setScale X: fmov s0,#1.875 -> #2.0"),
-  P_RAW(0x576208, 0x72a7faa9, 0xd503201f, "makeField: movk w9,#0x3fd5,lsl#16 (dead, was s1 hi half) -> nop"),
-  P_RAW(0x576210, 0x1e270121, 0x1e201001, "makeField: fieldmap node setScale Y: fmov s1,w9(1.66667) -> fmov s1,#2.0"),
+  // The makeField "fieldmap" node setScale(x,y) call is patched separately,
+  // below, via apply_field_zoom() -- its value is config.field_zoom, not a
+  // fixed constant.
 };
+
+// Encode: movz w<rd>, #imm16
+static uint32_t movz_w(int rd, uint16_t imm16) {
+  return 0x52800000u | ((uint32_t)imm16 << 5) | (uint32_t)rd;
+}
+// Encode: movk w<rd>, #imm16, lsl #16
+static uint32_t movk_w_hi(int rd, uint16_t imm16) {
+  return 0x72A00000u | ((uint32_t)imm16 << 5) | (uint32_t)rd;
+}
+// Encode: fmov s<sd>, w<wn>  (GP register -> single-precision FP register)
+static uint32_t fmov_s_from_w(int sd, int wn) {
+  return 0x1E270000u | ((uint32_t)wn << 5) | (uint32_t)sd;
+}
+// Encode: add x<rd>, x<rn>, #imm12  (64-bit GP form -- add_w_imm above is 32-bit)
+static uint32_t add_x_imm(int rd, int rn, uint32_t imm12) {
+  return 0x91000000u | ((imm12 & 0xFFFu) << 10) | ((uint32_t)rn << 5) | (uint32_t)rd;
+}
+// Encode: stp s<rt>, s<rt2>, [x<rn>, #imm]  (32-bit SIMD&FP pair, signed
+// offset, no writeback -- imm must be a multiple of 4, passed pre-divided).
+static uint32_t stp_s_imm(int rt, int rt2, int rn, int imm_over_4) {
+  return 0x2D000000u | (((uint32_t)imm_over_4 & 0x7Fu) << 15) |
+         ((uint32_t)rt2 << 10) | ((uint32_t)rn << 5) | (uint32_t)rt;
+}
+// (An `add w<rd>, w<rn>, #imm12` encoder was sketched here for a possible
+// setScrollLimit Y-max small-room compensation term (candidate site
+// 0x570e48). That site sits inside setScrollLimit's tile-window integer
+// math, which reuses registers across both axes heavily enough that it
+// couldn't be pinned down with confidence in the time available -- unlike
+// the sites below, which were each verified end-to-end against the actual
+// disassembly. Left out rather than guessed at; see apply_field_camera_-
+// centering's header comment for what this affects and how to pick it
+// back up if you want to chase it.)
+
+// ---------------------------------------------------------------------------
+// apply_field_view_zoom -- keeps FieldMap's view-size and camera-limit
+// constants in lock-step with field_zoom, so the fieldmap node's on-screen
+// size (view_art_px * zoom, in design units -- see apply_field_zoom below)
+// always comes out to exactly 640x360: the full design canvas.
+//
+// That's the piece field_zoom alone could never do: setScale only rescales
+// content whose visible extent (how much of the map the camera frames) was
+// fixed regardless of zoom. At zoom < 2.0 the rescaled content no longer
+// covers the 640x360 canvas -> black border on the uncovered edges. At
+// zoom > 2.0 it overflows the canvas and gets cropped. Neither is what
+// "adjust zoom, keep the screen filled" means.
+//
+// The three sites (disassembly-verified roles -- the two setScrollLimit
+// sites were previously mislabeled here as view "densities"; they are not):
+//
+//   0x56d874  FieldMap::init -- the one TRUE view-size density:
+//                 viewH_art (field+0x34c) = visibleH_design * (C / 320)
+//             design_resolution_fix pins visibleH to 360; we want
+//             viewH_art = 360/zoom, so C = 320/zoom. (+0x34c is consumed by
+//             the per-frame Scroll() Y conversion "scrollY = Ycam + viewH -
+//             planeH", which therefore becomes zoom-aware automatically.)
+//
+//   0x570cfc  FieldMap::setScrollLimit -- design->art unit conversion for
+//             the X camera-limit overhang term:
+//                 s0_art = (44.0 - originX) * C / 480
+//             Stock C = 256 encodes the stock 1.875 design-per-art scale
+//             (256/480 = 1/1.875). Under zoom the conversion is 1/zoom, so
+//             C = 480/zoom. (The 44.0 literal itself -- a separate, stale
+//             stock margin constant -- is NOT touched by this patch set.
+//             It affects scroll clamping near map edges only, not general
+//             mid-map centering -- see the (disabled) apply_field_camera_-
+//             centering's header comment below for why that's a separate,
+//             still-open problem, and where it actually needs fixing.)
+//
+//   0x570d0c  FieldMap::setScrollLimit -- scale factor for the Y camera-
+//             limit top-overhang term K:
+//                 K_art = (visibleH - 320) * C / 320 = 40 * C / 320 = C/8
+//             K = viewH - 192: how far the DISPLAYED window's extent
+//             exceeds the game-logic camera's own 192-art window, in the
+//             scroll convention "scrollY = Ycam + viewH - planeH". Stock
+//             identity: C = 192 -> K = 24 = 216 - 192, i.e. stock already
+//             displays 24 art rows more than the engine window and K is
+//             precisely that excess. Generalized: C = 8*(viewH - 192).
+//             (The previous formula here, 4320/zoom - 2304, was derived
+//             for the never-shipped symmetric-node design and reduces to
+//             stock at NO configuration that ever ran -- it has been wrong
+//             at every zoom since it was written, one more contributor to
+//             edge-clamp weirdness at non-default zooms.)
+//
+// THE VERTICAL CENTERING MODEL (this is also where the character's screen
+// height is fixed -- the bug where the character sat lower the more you
+// zoomed in, unreachable below-center at 2.0 and feet-off-screen at 3.0):
+//
+//   FieldMap::Scroll converts the engine camera to the plane position every
+//   frame as tY = camTopArt + viewH - planeH (disassembly- and log-
+//   verified). With node_y = 0 and a screen that shows 360/zoom art rows,
+//   that formula pins the VISIBLE window to
+//         [camTop + viewH - 360/zoom,  camTop + viewH]
+//   i.e. the visible BOTTOM sits at camTop + viewH always: viewH is not
+//   just "how much is drawn", it POSITIONS the window. The recycler fills
+//   rows [camTop, camTop + viewH] (proven by the round-1 node_y failure
+//   geometry: node up at 1.75 -> bar at BOTTOM, node down at 2.0 -> bar at
+//   TOP -- exactly the rows outside that range).
+//
+//   Stock (pixel-perfect off) displays viewH = 216 at y-scale 1.66667:
+//   visible = [camTop, camTop+216], and ResetScrollAddress's 14-chip
+//   constant puts the player's tile row at camTop + 112, so the character
+//   renders 112 * 1.66667 = 186.67 design px from the screen top (~52%,
+//   visually centered). THAT is the registration every zoom must
+//   reproduce. (Multiple earlier sessions -- including the reverted
+//   round-7 engine patch -- measured "stock" against the engine's internal
+//   192-art window instead (112/192 = 58.3%). The engine window is not
+//   what stock DISPLAYS; the display window is 216. This one wrong
+//   reference is why every previous derivation landed low.)
+//
+//   The old formula here, viewH = 360/zoom, pins the visible TOP to camTop
+//   instead -- so the character lands at 112*zoom design px: 210 at 1.875,
+//   224 at 2.0, 336 at 3.0 (feet below screen). The exact reported
+//   symptoms, linear in zoom.
+//
+//   Fix -- one computed number, no engine or node changes:
+//         viewH = max(112 + 173.333/zoom,  360/zoom),  capped at 220
+//     - zoom >= 1.6667 takes the first branch: the character's tile row
+//       renders at exactly 186.67 design px AT EVERY ZOOM (identical to
+//       stock pp-off), and field_zoom now extends the view above and below
+//       that fixed point. Visible top = camTop + (112 - 186.67/zoom) stays
+//       at/below camTop (drawn), and the visible bottom sits exactly at
+//       the drawn bottom -- the same boundary the old formula already
+//       shipped with no seam.
+//     - zoom < 1.6667 takes the fill branch (= old behavior: top at
+//       camTop, character slightly HIGH at 112*zoom design). The hard 220
+//       cap is the 432x224 RenderTexture ceiling (five hardcoded create
+//       sites in makeField): below zoom ~1.64 the screen simply needs more
+//       art rows than the RT can hold and a top bar is unavoidable --
+//       fixing zoom-out for real means resizing those five RT sites, a
+//       separate project. This also explains the zoom 1.0 "map anchored to
+//       the bottom, black above" look: visible bottom stays pinned to the
+//       drawn bottom while the RT can't fill upward.
+//
+//   Identity: at zoom = 1.66667 BOTH vertical sites encode exactly the
+//   stock 192.0f words -- bit-identical stock display geometry. (1.875 is
+//   the X-scale identity; 1.66667 is the Y-scale identity. They were never
+//   the same number -- that's the stock 9:8 art-pixel ratio again -- and
+//   treating 1.875 as the Y invariant was the second load-bearing mistake
+//   in the earlier derivations.)
+//
+// Reuses movz_topf (defined above, for apply_design_resolution) directly --
+// same single-instruction "movz w_,#topbits(float),lsl#16" encoding these
+// sites already used for their original fixed values, so no new instruction
+// slots are needed and no adjacent code is disturbed. Computed values are
+// rounded to the nearest top-16 representable float (7 mantissa bits) before
+// encoding: worst case ~0.5 art-px in viewH (~1 design px of character
+// registration at 2x) -- and exact for the stock-identity 192.0 words.
+// ---------------------------------------------------------------------------
+static void apply_field_view_zoom(so_module *mod, float zoom) {
+  if (zoom < 0.05f) zoom = 0.05f;  // guard: div-by-zero / degenerate view
+
+  // Vertical: one source of truth. 173.333 = 360 - 186.67 = the art rows
+  // that must sit BELOW the character's tile row, scaled back to art units.
+  float viewH = 112.0f + 173.33333f / zoom;      // character-pinned branch
+  float fill  = 360.0f / zoom;                   // screen-fill branch
+  if (fill > viewH) viewH = fill;                // zoom < 1.6667
+  if (viewH > 220.0f) viewH = 220.0f;            // 432x224 RT hard ceiling
+
+  float density_v = viewH * (320.0f / 360.0f);   // 0x56d874: site stores C
+                                                 //   where viewH = 360*C/320
+  float kscale_v  = 8.0f * (viewH - 192.0f);     // 0x570d0c: C = 8*K
+  float conv_h    = 480.0f / zoom;               // 0x570cfc: design->art, X
+
+  // Round to nearest top-16 float (the movz slot keeps 7 mantissa bits).
+  #define RN16(f) ({ union { float _f; uint32_t _u; } _x; _x._f = (f); \
+                     _x._u = (_x._u + 0x8000u) & 0xFFFF0000u; _x._f; })
+  density_v = RN16(density_v);
+  kscale_v  = RN16(kscale_v);
+  conv_h    = RN16(conv_h);
+  #undef RN16
+
+  const PatchEntry e[3] = {
+    { NULL, 0, 0x56d874, movz_topf(8, 192.0f), movz_topf(8, density_v),
+      "init: view-height density 192/320 -> (viewH*8/9)/320 [centering]" },
+    { NULL, 0, 0x570d0c, movz_topf(9, 192.0f), movz_topf(9, kscale_v),
+      "setScrollLimit: Y-limit overhang scale 192 -> 8*(viewH-192)" },
+    { NULL, 0, 0x570cfc, movz_topf(8, 256.0f), movz_topf(8, conv_h),
+      "setScrollLimit: X-limit design->art conversion 256 -> 480/zoom" },
+  };
+  apply_patches(mod, e, 3);
+}
+
+// Patch FieldMap::makeField's "fieldmap" node Node::setScale(zoom, zoom)
+// call. Reuses the original 4 instruction slots (0x5761fc-0x576210) as:
+//   movz w9, #lo16(zoom)
+//   movk w9, #hi16(zoom), lsl #16
+//   fmov s0, w9      (X)
+//   fmov s1, w9      (Y -- same register, so always == X)
+static void apply_field_zoom(so_module *mod, float zoom) {
+  union { float f; uint32_t u; } x; x.f = zoom;
+  uint16_t lo16 = (uint16_t)(x.u & 0xFFFF);
+  uint16_t hi16 = (uint16_t)(x.u >> 16);
+
+  const PatchEntry e[4] = {
+    { NULL, 0, 0x5761fc, 0x528aaaa9, movz_w(9, lo16),
+      "makeField: fieldmap node setScale: movz w9,#lo16(zoom)" },
+    { NULL, 0, 0x576200, 0x1e2fd000, movk_w_hi(9, hi16),
+      "makeField: fieldmap node setScale: movk w9,#hi16(zoom),lsl#16" },
+    { NULL, 0, 0x576208, 0x72a7faa9, fmov_s_from_w(0, 9),
+      "makeField: fieldmap node setScale X: fmov s0,w9" },
+    { NULL, 0, 0x576210, 0x1e270121, fmov_s_from_w(1, 9),
+      "makeField: fieldmap node setScale Y: fmov s1,w9" },
+  };
+  apply_patches(mod, e, 4);
+}
+
+// ---------------------------------------------------------------------------
+// apply_field_scroll_anchor -- NOT CURRENTLY CALLED. See the long comment at
+// its call site (in apply_game_patches, search "double-compensate") for why:
+// this and apply_field_node_anchor fix the same pivot point two different,
+// mutually-exclusive ways, and only one may be active at a time.
+//
+// fixes FieldMap::setScroll's map-entry camera
+// snap so the player lands centered on screen at any zoom, not just stock
+// 1.875. Supersedes the earlier apply_field_camera_centering attempt below
+// (kept as history, not code -- see its post-mortem after this function).
+//
+// setScroll(x, y) is the one-time call that runs on room entry / warp. Its
+// stock body (FieldMap::setScroll, 0x576cd8, disassembly-verified against
+// this exact binary) computes:
+//     tX = 128.0 - x
+//     tY = (y + 96.0) - planeH        (planeH = this+0x334, render-plane
+//                                       height in art-px, read as int and
+//                                       scvtf'd to float)
+// and writes the pair into THREE places each (+0x350/+0x358/+0x360 for tX,
+// +0x354/+0x35c/+0x364 for tY -- a degenerate min/cur/max triplet, all equal
+// at map-entry; setScrollLimit widens min/max later for rooms bigger than
+// one screen). 128.0 and 96.0 are fixed HALF-VIEWPORT constants in art-px:
+// half of the original pre-zoom 256x192 art window (256/2=128, 192/2=96).
+// They are correct ONLY at the stock 1.875 zoom the layout was authored
+// for (240/1.875=128, 180/1.875=96 -- 240x180 being half of the 640x360
+// design canvas) and never scale with config.field_zoom, which is exactly
+// why the character lands off-center by a constant, zoom-proportional
+// amount at any other zoom (empirically +16,+12 px at zoom=2, -16,-12 px
+// at zoom=1.75 -- both confirmed against real debug logs).
+//
+// Fix: replace the two half-viewport constants with 240.0/zoom and
+// 180.0/zoom, generalizing the same relationship that produces the stock
+// 128/96 values at zoom=1.875. This is dimensionally the same fix already
+// applied (independently) to the view-size and camera-limit sites in
+// apply_field_view_zoom above -- setScroll was simply the one site that
+// investigation hadn't reached yet.
+//
+// How it's applied: the ORIGINAL 14 instructions at 0x576d28-0x576d5c (56
+// bytes -- everything from the first constant load through the last of the
+// six store instructions) are replaced in place with 14 new instructions
+// that compute the same tX/tY pair from zoom-scaled constants instead of
+// fixed ones, using the exact same input registers (s8=y-arg, s9=x-arg,
+// x19=this) and output locations (+0x350.. via x9=this+0x350) as stock.
+// No new instruction slots, no branch, no cave -- every slot's *old* word
+// was read directly from this build's libchrono.so and is verified before
+// writing, so a future binary that doesn't match this exact layout will
+// skip the patch with a logged mismatch instead of corrupting anything.
+//
+// Reordering (why 14 slots in, 14 out, nothing left over):
+//   old 0x576d28 mov w8,#bits(96.0)        -> new movz w8,#bits(180/zoom)
+//   old 0x576d2c ldr s1,[x19,#0x334]       -> unchanged (loads planeH int)
+//   old 0x576d30 movi v0.2s,#0x43,lsl#24   -> new fmov s2,w8   (moved from old d34)
+//   old 0x576d34 fmov s2,w8                -> new movz w8,#bits(240/zoom)
+//   old 0x576d38 scvtf s1,s1               -> unchanged
+//   old 0x576d3c fadd s2,s8,s2             -> unchanged
+//   old 0x576d40 fsub s0,s0,s9             -> new fmov s0,w8  (new)
+//   old 0x576d44 fsub s1,s2,s1             -> new fsub s0,s0,s9   (moved from old d40)
+//   old 0x576d48 str s0,[x19,#0x350]       -> new fsub s1,s2,s1   (moved from old d44)
+//   old 0x576d4c str s0,[x19,#0x358]       -> new add x9,x19,#0x350   (new)
+//   old 0x576d50 str s0,[x19,#0x360]       -> new stp s0,s1,[x9]       (new)
+//   old 0x576d54 str s1,[x19,#0x354]       -> new stp s0,s1,[x9,#8]    (new)
+//   old 0x576d58 str s1,[x19,#0x35c]       -> new stp s0,s1,[x9,#0x10] (new)
+//   old 0x576d5c str s1,[x19,#0x364]       -> new nop                  (6th store was redundant)
+// Every "new" line was hand-assembled with Keystone and round-tripped
+// through Capstone to confirm it decodes back to exactly the intended
+// mnemonic/operands before being hardcoded here.
+//
+// What this does NOT touch, and why: FieldMap::Scroll (0x576ec8, the real
+// ~10KB per-frame camera-follow function) was fully disassembled and
+// searched for any embedded copy of 128.0/96.0/240.0-family constants in
+// its general (non-cutscene) path -- none exist. The only 240.0/360.0 pair
+// found in Scroll() lives behind a `scroll-mode == 3` branch (a scripted
+// pan, operating in fixed DESIGN-space units that are correct at any zoom
+// by construction) and is unrelated to normal player-follow. That's
+// consistent with Scroll() re-deriving its per-frame target purely from
+// the persistent +0x350.. fields this patch writes (and from the already
+// zoom-aware view-size fields apply_field_view_zoom feeds elsewhere) rather
+// than hardcoding its own copy of the anchor -- which would mean this one
+// fix is sufficient for continuous walking too, not just the room-entry
+// snap. That inference is NOT yet confirmed on real hardware: it's a
+// reasonable reading of the disassembly, not a substitute for new
+// debug_zoom_*.log captures with this patch active. Do that before
+// declaring the centering bug closed. FieldMap::Scroll itself is
+// deliberately left byte-for-byte untouched here regardless -- every prior
+// attempt to patch it directly has shipped a new, different visible bug
+// (black borders, shifted/cut-off content, a crash), documented in the
+// apply_field_camera_centering post-mortem below.
+// ---------------------------------------------------------------------------
+__attribute__((unused))
+static void apply_field_scroll_anchor(so_module *mod, float zoom) {
+  if (zoom < 0.05f) zoom = 0.05f;  // guard: div-by-zero / degenerate anchor
+
+  const uint32_t wY = movz_topf(8, 180.0f / zoom);
+  const uint32_t wX = movz_topf(8, 240.0f / zoom);
+
+  const PatchEntry e[14] = {
+    { NULL, 0, 0x576d28, 0x52a85808, wY,
+      "setScroll: Y-half-viewport const: movz w8,#96.0 -> #(180/zoom)" },
+    { NULL, 0, 0x576d2c, 0xbd433661, 0xbd433661,
+      "setScroll: ldr s1,[x19,#0x334] (planeH) -- unchanged" },
+    { NULL, 0, 0x576d30, 0x0f026460, fmov_s_from_w(2, 8),
+      "setScroll: X-half-viewport const load moved here: fmov s2,w8 (Y)" },
+    { NULL, 0, 0x576d34, 0x1e270102, wX,
+      "setScroll: X-half-viewport const: movz w8,#128.0(vec) -> #(240/zoom)" },
+    { NULL, 0, 0x576d38, 0x5e21d821, 0x5e21d821,
+      "setScroll: scvtf s1,s1 (planeH int->float) -- unchanged" },
+    { NULL, 0, 0x576d3c, 0x1e222902, 0x1e222902,
+      "setScroll: fadd s2,s8,s2 (y_arg + Y-half-viewport) -- unchanged" },
+    { NULL, 0, 0x576d40, 0x1e293800, fmov_s_from_w(0, 8),
+      "setScroll: fmov s0,w8 (X-half-viewport, new slot)" },
+    { NULL, 0, 0x576d44, 0x1e213841, 0x1e293800,
+      "setScroll: fsub s0,s0,s9 (X-half-viewport - x_arg = tX), moved" },
+    { NULL, 0, 0x576d48, 0xbd035260, 0x1e213841,
+      "setScroll: fsub s1,s2,s1 (Y-sum - planeH = tY), moved" },
+    { NULL, 0, 0x576d4c, 0xbd035a60, add_x_imm(9, 19, 0x350),
+      "setScroll: add x9,x19,#0x350 (base of tX/tY min/cur/max triplet)" },
+    { NULL, 0, 0x576d50, 0xbd036260, stp_s_imm(0, 1, 9, 0x00 / 4),
+      "setScroll: stp s0,s1,[x9]       (Xmin,Ymin)" },
+    { NULL, 0, 0x576d54, 0xbd035661, stp_s_imm(0, 1, 9, 0x08 / 4),
+      "setScroll: stp s0,s1,[x9,#8]    (Xcur,Ycur)" },
+    { NULL, 0, 0x576d58, 0xbd035e61, stp_s_imm(0, 1, 9, 0x10 / 4),
+      "setScroll: stp s0,s1,[x9,#0x10] (Xmax,Ymax)" },
+    { NULL, 0, 0x576d5c, 0xbd036661, 0xd503201f,
+      "setScroll: nop (6th store was redundant -- Ymax now set by the stp above)" },
+  };
+  apply_patches(mod, e, 14);
+}
+
+static uint32_t encode_b(uintptr_t from_addr, uintptr_t to_addr); // forward declare
+// ---------------------------------------------------------------------------
+// apply_field_node_anchor -- fixes FieldMap::makeField's setPosition call so
+// the fieldmap NODE's own screen position pivots around design-canvas center
+// (320,180) at any zoom, instead of the stale flat (ctr::x_offset, 0.0) pair
+// (a leftover multi-device-width formula that only ever evaluates to a fixed
+// +80/+0 offset once design_resolution_fix pins the canvas to 640x360 --
+// blind to zoom entirely).
+//
+// This uses the exact same local reference point, (128,96), that
+// apply_field_scroll_anchor above already made setScroll's camera-follow AIM
+// point pivot around (via its 240/zoom, 180/zoom formula, which is just
+// 2x128/2x96 in the same units). That match is not a coincidence: 128,96 is
+// this engine's original half-viewport constant (half of the stock 256x192
+// view) -- both setScroll (where the camera AIMS, in world space) and the
+// node's own position (where that aimed content actually LANDS on screen)
+// were always meant to agree on this same anchor. Before this fix, only one
+// of the two had been corrected for zoom, so they disagreed at every zoom
+// except the one value (1.875) where the old code's numbers happened to
+// coincide -- which is exactly why "even 2.0 wasn't centered" despite
+// setScroll already being fixed.
+//
+//   node_x = 320.0 - 128.0*zoom
+//   node_y = 180.0 - 96.0*zoom
+//
+// At zoom=1.875 this reduces to exactly (80.0, 0.0) -- bit-identical to the
+// stock runtime values (ctr::x_offset evaluates to 80.0 under our fixed
+// 640x360 canvas; the old Y arg was already a hardcoded 0.0) -- so there is
+// no behavior change at the reference zoom, same as every other zoom patch
+// in this file.
+//
+// Why this attempt is different from the disabled apply_field_camera_centering
+// below (which caused visible corruption -- stretched/stale plane content):
+// that attempt moved the node BEFORE setScroll's own camera-follow constants
+// had been corrected, so the node's new position and the camera's actual aim
+// point disagreed with each other in a new way, on top of the plane/RT
+// render-window mismatch. Now that apply_field_scroll_anchor has already
+// made setScroll pivot around this same (128,96) point, moving the node to
+// pivot around the SAME point keeps both systems in agreement -- the amount
+// the node needs to shift to recenter is small (single-digit to low-double-
+// digit art-px at the zoom range 1.25-3.0) and well within the fixed 432x224
+// RT canvas's redraw margin (independently re-verified against this exact
+// binary: the five RenderTexture::create call sites in makeField are still
+// hardcoded 432x224 -- confirmed fresh, not assumed from an old session).
+// Zoom below ~1.65 already has a separate, known, pre-existing limitation
+// (the view itself exceeds what a 432x224 canvas can hold, independent of
+// this fix) -- not something this patch changes either way.
+//
+// UPDATE (this session, round N): node_y is tunable now, not a fixed value.
+// History of what didn't work, briefly: (1) node_y = 180-96*zoom -- exposed
+// unrendered plane area (asymmetric margin: ~9-22 art-px vertically vs
+// ~33-56 horizontally at the zoom range that matters, so the same-size shift
+// that's safe for X isn't for Y -- black bar at BOTTOM at 1.75, TOP at 2.0).
+// (2) patching FieldMap::Scroll's per-frame tY sum directly -- desynced the
+// background plane from the sprite layer, since tY is a derived intermediate
+// consumed at different points by different layers (confirmed from your
+// screenshots: map and character stopped moving together while walking).
+// (3) patching FieldImpl::ResetScrollAddress's chip-window constants (the
+// upstream game-logic camera seed) -- mechanically the RIGHT layer to patch
+// (avoids the desync from (2)), but re-deriving its exact effect on final
+// on-screen position requires correctly relating THREE independent unit
+// systems (engine "chip" window ratios, the render-side art-pixel view
+// height, and the outer zoom transform) that did not converge to one
+// trustworthy formula through disassembly alone -- worth noting, one clue
+// found along the way: the engine's window places the character at ~58% down
+// the screen, not 50%, meaning the STOCK/native game was likely never at
+// exact geometric center to begin with, which is plausibly part of why a
+// "make it hit exactly 180" derivation kept landing short.
+//
+// (4) exposing the correction as two tunable config values
+// (field_zoom_y_center, field_zoom_y_coeff) with an internal margin clamp,
+// on the theory that a badly-tuned coefficient could only under-correct and
+// never reproduce the black-bar bug from (1). Measured directly against
+// real on-device screenshots at zoom 1.0/2.0/3.0, this was WRONG: at
+// zoom=3.0 the clamp let through a shift roughly 3x larger than the actual
+// available margin (144 design-units computed vs. a real ~30-unit black bar
+// appearing on screen), and at zoom=2.0 the "safely clamped" 36-unit shift
+// produced a 36-unit black bar directly. The clamp's margin model did not
+// match the real, in-practice redraw margin -- so this is not a case of
+// picking better constants; the mechanism itself (shifting node_y, which
+// also shifts the background since it's the same parent node) reintroduces
+// the exact class of bug it was meant to safely avoid.
+//
+// (5) a raw, unclamped, zoom-independent design-unit value
+// (field_zoom_y_test_shift) added directly to node_y, on the theory that at
+// least a SMALL value would be safe even if the exact safe limit couldn't
+// be calculated. Also wrong on real hardware -- because the mechanism (not
+// the amount) is the problem: even a small shift of THIS node moves the
+// same parent the background renders from, and the background's own
+// redraw system doesn't know the shift happened.
+//
+// CONCLUSION after 5 rounds: node_y is retired as a lever for this axis
+// entirely, permanently fixed at 0.0 (see below) -- not because a small
+// enough number couldn't be found, but because this specific node is the
+// wrong place to make ANY vertical correction (shifting it either does
+// nothing or reintroduces black bars, confirmed on real hardware -- there
+// is no safe middle value).
+//
+// Round 6 tried moving the correction upstream instead, to
+// apply_field_engine_center_y (FieldImpl::ResetScrollAddress's camera-
+// placement ratio) -- also disabled after real-hardware testing made things
+// WORSE, not better (see that function's own header for what was wrong
+// with the reasoning). As of this session, Y has NO working fix. X is
+// untouched throughout -- proven correct already, ample margin at every
+// zoom, never had this problem.
+//
+// Implementation note: of the 6 instruction slots between the setScale call
+// and setPosition's blr, only 2 are actually free to repurpose. The other 4
+// -- including BOTH halves of resolving x21 = &ctr::x_offset -- must stay
+// completely untouched, because x21 is read a SECOND time, ~700 bytes later
+// at 0x57652c, by a different (overlay/border) node's setPosition call that
+// this patch is not touching. This is exactly the register-liveness mistake
+// that caused a save-load crash in a much earlier session; it's called out
+// explicitly here because it was re-verified against this exact binary
+// before writing a single byte, not discovered by testing. The two free
+// slots (0x576220, was `movi d1,#0`; 0x576230, was `ldr s0,[x21]`) become a
+// branch-out to a small cave (compute node_x with full movz+fmov precision,
+// set s1 = 0.0 via a single `fmov s1,wzr`) and a neutralizing nop,
+// respectively -- x21's own resolution at 0x57621c/0x576228 is left 100%
+// byte-identical to stock.
+// ---------------------------------------------------------------------------
+static void apply_field_node_anchor(so_module *mod, float zoom) {
+  if (zoom < 0.05f) zoom = 0.05f;  // guard: div-by-zero / degenerate anchor
+
+  const uint32_t CAVE_CODE  = 0x376394;  // verified all-zero, 32B, R+X segment,
+                                          // unused by any other patch in this file
+  const uint32_t BRANCH_OUT = 0x576220;  // was: movi d1,#0 (dead: old Y-arg=0.0)
+  const uint32_t RESUME     = 0x576224;  // mov x0,x26 -- UNCHANGED, resumes here
+  const uint32_t NOP_SITE   = 0x576230;  // was: ldr s0,[x21] (dead: old X-arg)
+
+  uintptr_t base        = (uintptr_t)mod->load_base;
+  uintptr_t code_addr    = base + CAVE_CODE;
+  uintptr_t branch_addr  = base + BRANCH_OUT;
+  uintptr_t resume_addr  = base + RESUME;
+
+  // --- X: unchanged from before -- proven correct, ample margin ---
+  const float node_x = 320.0f - 128.0f * zoom;
+
+  // --- Y: back to a FIXED 0.0. Retired for good this time. ---
+  //
+  // Every attempt at correcting Y by shifting THIS node (fixed derivation,
+  // engine-constant-based derivation, per-frame Scroll() patch, tunable
+  // formula with a margin clamp, then a raw unclamped test value) hit the
+  // same wall, confirmed directly on real hardware: this node is the SAME
+  // parent the background renders from, so any shift big enough to matter
+  // either does nothing (the background's own redraw system just re-centers
+  // under it) or reintroduces a black bar (exposing area the background
+  // never redrew for the new position) -- there is no safe middle value to
+  // dial in, because the mechanism itself is wrong, not the constant.
+  //
+  // Round-6 (apply_field_engine_center_y) and round-7
+  // (apply_field_engine_registration_y) both moved the correction upstream
+  // to FieldImpl::ResetScrollAddress instead -- both disabled after
+  // real-hardware testing (round 7 additionally broke the battle camera;
+  // see its post-mortem). Y's actual fix lives in apply_field_view_zoom's
+  // viewH formula now -- the render-side window position, not this node
+  // and not the engine. X stays exactly as-is here -- it never had this
+  // problem (ample, confirmed-real margin at every zoom).
+  const float node_y = 0.0f;
+
+  uint32_t off = 0;
+  #define EMIT(w) do { uint32_t _w = (w); __builtin_memcpy((void*)(code_addr+off), &_w, 4); off += 4; } while (0)
+  EMIT(movz_topf(9, node_x));     // w9 = node_x bit pattern
+  EMIT(fmov_s_from_w(0, 9));      // s0 = node_x
+  EMIT(movz_topf(10, node_y));    // w10 = node_y bit pattern
+  EMIT(fmov_s_from_w(1, 10));     // s1 = node_y
+  EMIT(encode_b(code_addr + off, resume_addr));  // back into makeField
+  #undef EMIT
+
+  const PatchEntry e[2] = {
+    { NULL, 0, BRANCH_OUT, 0x2f00e401, encode_b(branch_addr, code_addr),
+      "makeField: setPosition X/Y args -- branch to node-anchor cave (was: movi d1,#0)" },
+    { NULL, 0, NOP_SITE, 0xbd4002a0, 0xd503201f,
+      "makeField: old ctr::x_offset X-arg read -- neutralized to nop (x21 itself "
+      "is left fully intact -- its OTHER, later use at 0x57652c for an unrelated "
+      "overlay node still needs it, and is untouched by this patch)" },
+  };
+  apply_patches(mod, e, 2);
+}
+
+// ---------------------------------------------------------------------------
+// apply_field_scroll_pivot_y -- DISABLED, post-mortem only (not called
+// anywhere -- kept for history, same as apply_field_camera_centering and
+// apply_field_scroll_anchor above).
+//
+// What it did: corrected FieldMap::setScroll's Y-half-viewport constant
+// (96.0, half of the stock 192-art-px view height) to 180.0/zoom, on the
+// theory that this was the mechanism controlling the character's vertical
+// screen position. It was written when apply_field_node_anchor still left
+// node_y permanently at 0.0, under the (at-the-time reasonable) assumption
+// that Y needed a DIFFERENT mechanism than X's node-shift, since node-
+// shifting Y turned out to have very little spare render margin.
+//
+// Why it's superseded, not just redundant: setScroll's Y-half-viewport
+// constant only affects the ONE-TIME camera snap on room entry --
+// FieldMap::Scroll() recomputes tY from its own separate internal constant
+// every single frame afterward, completely independent of this one. So this
+// patch's effect was real for exactly one frame per room entry and then
+// silently overwritten -- invisible during ordinary walking, which is
+// consistent with testing that showed no measurable difference with it on
+// vs. off. The actual, persistent Y correction now lives in
+// apply_field_node_anchor's tunable node_y trim (config.field_zoom_y_center
+// / field_zoom_y_coeff), applied in the OUTER/post-scale frame the same way
+// X's correction always has been -- one mechanism per axis, both proven
+// against the actual redraw margin rather than assumed.
+// ---------------------------------------------------------------------------
+static void apply_field_scroll_pivot_y(so_module *mod, float zoom) __attribute__((unused));
+static void apply_field_scroll_pivot_y(so_module *mod, float zoom) {
+  if (zoom < 0.05f) zoom = 0.05f;
+  const uint32_t SITE = 0x576d28;  // was: mov w8,#0x42c00000 (96.0)
+  const PatchEntry e[1] = {
+    { NULL, 0, SITE, 0x52a85808, movz_topf(8, 180.0f / zoom),
+      "setScroll: Y-half-viewport pivot 96.0 -> 180.0/zoom (X pivot at "
+      "0x576d30, still stock 128.0, deliberately untouched)" },
+  };
+  apply_patches(mod, e, 1);
+}
+
+// ---------------------------------------------------------------------------
+// apply_field_engine_center_y -- DISABLED. Patches FieldImpl::ResetScrollAddress,
+// the game engine's camera-placement code that runs once every time you
+// enter a room, on the theory that its 14/24 chip window split directly sets
+// the character's on-screen vertical registration.
+//
+// Disassembly of the general/mid-map case (0x576e98-0x576ea8), confirmed
+// fresh against this exact binary and still accurate:
+//   w9 = 2*player_tile_y
+//   window_top    = w9 - 14   (stored to state+0x18)
+//   window_bottom = w9 + 10   (stored to state+0x1c)
+// 1 chip = 8 native-resolution art-pixels; 24 chips = 192, the original
+// pre-zoom field view height. 14/24 = 58.3% down the window.
+//
+// WHY THIS IS DISABLED: the encoding analysis above was real and re-verified,
+// but it only established what WRITES state+0x18/+0x1c (confirmed: nothing
+// else does, except a screen-shake subsystem gated off during normal
+// walking). It never established what READS those two fields or how they
+// actually turn into a screen position -- that gap was the mistake. Tested
+// on real hardware at chips=12 (the exact-50/50 value), zoom=3.0: the
+// character got WORSE, not better -- lower on screen, with the bottom of
+// the screen clipping/going missing. That result only makes sense if this
+// window ISN'T a direct registration point for the character sprite.
+//
+// Re-reading the FULL function (not just the mid-case branch) afterward:
+// every case, on both axes, produces a [min,max] pair with the exact same
+// shape a scroll-limit / edge-clamp / dead-zone range would have -- boundary
+// checks against state+0x38/0x3c/0x40/0x44 first, then a window is written
+// covering wherever the player currently is. That's consistent with "this
+// is the camera's allowed scroll range," not "this is where the character
+// sits on screen." The actual steady-state screen position most likely
+// still comes from FieldMap::Scroll()'s per-frame tY computation (the one
+// with the baked-in half-view constant found earlier in this project) --
+// which was tried and reverted for a DIFFERENT reason (it desynced the
+// background from the character, since it's a downstream copy consumed at
+// a different point than the background redraw). Whether some third,
+// still-unfound piece ties these two functions together is unknown.
+//
+// Left in place (not deleted) as documented, working history of what does
+// NOT work and why, consistent with every other retired attempt in this
+// file. Not called anywhere; kept `static` + `__attribute__((unused))` so
+// it doesn't need to be deleted to keep the build clean.
+// ---------------------------------------------------------------------------
+static void apply_field_engine_center_y(so_module *mod, int chips) __attribute__((unused));
+static void apply_field_engine_center_y(so_module *mod, int chips) {
+  if (chips < 0) chips = 0;
+  if (chips > 24) chips = 24;
+  const int below = 24 - chips;
+
+  const uint32_t SITE_TOP = 0x576e9c;  // was: sub w10,w9,#0xe  (14)
+  const uint32_t SITE_BOT = 0x576ea4;  // was: add w10,w9,#0xa  (10)
+
+  const PatchEntry e[2] = {
+    { NULL, 0, SITE_TOP, 0x5100392a, 0x51000000u | ((uint32_t)(chips & 0xFFF) << 10) | (9u << 5) | 10u,
+      "ResetScrollAddress: window-top chip offset 14 -> field_zoom_y_anchor_chips" },
+    { NULL, 0, SITE_BOT, 0x1100292a, 0x11000000u | ((uint32_t)(below & 0xFFF) << 10) | (9u << 5) | 10u,
+      "ResetScrollAddress: window-bottom chip offset 10 -> 24-anchor_chips" },
+  };
+  apply_patches(mod, e, 2);
+}
+
+// ---------------------------------------------------------------------------
+// apply_field_camera_centering -- DISABLED, post-mortem only (superseded by
+// apply_field_node_anchor above -- kept for history, not called anywhere).
+//
+// What it tried to do: reposition the fieldmap node itself (node_x =
+// 320-128*zoom, node_y = 180-96*zoom) so the node's own local origin landed
+// on the design-canvas center at any zoom, replacing the stale flat
+// (ctr::x_offset, 0.0) pair makeField normally passes to setPosition.
+//
+// NOTE: apply_field_node_anchor above ends up using this exact same formula
+// -- the formula was always right. What was missing back when this was
+// first tried is what's described below: setScroll's own camera-follow
+// constants (fixed later by apply_field_scroll_anchor) hadn't been corrected
+// yet, so moving the node and the camera's actual aim point disagreed with
+// each other on top of the render-window issue. See apply_field_node_anchor's
+// header comment above for the full current reasoning and the register-
+// liveness bug (the x21 double-use at 0x57652c) that a naive "just redo the
+// same patch" attempt would have silently reintroduced.
+//
+// Why it's wrong (as tried THEN, before apply_field_scroll_anchor existed):
+// the background art for a map is NOT drawn live into the node's full local
+// space -- it's pre-rendered into a fixed-size RenderTexture ("plane",
+// historically measured at 432x224 art-px for standard maps) that is itself
+// a CHILD of the fieldmap node, repositioned every frame by FieldMap::Scroll
+// independently, using its own internal scrollX/scrollY camera-follow state
+// -- with no knowledge of any outer offset applied to the parent node.
+// Moving the parent node doesn't "recenter the camera" at all by itself: it
+// just physically slides the already-rendered, fixed-size picture around
+// under a canvas that's still exactly 640x360. Slide it far enough (as it
+// was, back when setScroll's own aim point was still wrong) and you uncover
+// plane area the ring-buffer tile-recycler never redrew for the current
+// scroll position -- which is exactly "sprites at the top look stretched
+// into vertical lines, like peeking past what we should see": that's stale/
+// edge-clamped texture content becoming visible, not a stretching of the
+// sprites themselves.
+//
+// 0x576230 (`ldr s0,[x21]`) and everything else in FieldMap::makeField's
+// setPosition call is left 100% untouched, restoring the exact stock
+// (ctr::x_offset, 0.0) behavior.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Scroll-state diagnostic snapshot -- v2.
+//
+// v1 hooked FieldMap::Scroll()'s entry and called debugPrintf() (mutexLock
+// -> vfprintf -> fflush) directly from inside the hook. That crashed on
+// save-resume, twice, in different specific ways, even after each version
+// passed careful static verification (instruction encoding, branch targets,
+// register liveness, cave-zero/collision checks -- all confirmed correct
+// both times). A static bug that keeps getting fixed and the crash keeps
+// recurring the same way points at something static analysis can't see.
+// The most likely candidate: FieldMap::Scroll() (or whatever calls it) may
+// run on an engine-spawned thread rather than the homebrew's own main
+// thread. This project's pthread shim (tls_setup_guard() in so_util.c)
+// gives such threads a synthetic TLS block that is NOT a valid libnx
+// ThreadVars struct -- harmless for the engine's own code, which never
+// touches libnx, but fatal the moment something calls a real libnx
+// primitive from that thread. mutexLock() (used inside debugPrintf) is
+// exactly such a primitive.
+//
+// v2 removes that risk category entirely rather than chasing it further:
+// the hook body does ONLY raw memory reads (from the FieldMap 'this'
+// pointer -- always valid, it's a normal C++ method call) and raw memory
+// writes to a plain global struct in the HOMEBREW's own process memory.
+// No calls, no branches into any library code, no mutex, no file I/O --
+// literally just loads and stores, so it can't care what thread it runs
+// on. Verified: the hook body touches only x9/x10/sp -- x0 (this), s0
+// (the incoming float arg), and x30 (return address) are never written,
+// so there's nothing to save/restore at all, which also removes the whole
+// class of "did I preserve state across a call correctly" bug that hit
+// v1 twice.
+//
+// The actual debugPrintf() call happens separately, once per real frame,
+// from ct_nx's own main loop in main.c (see scroll_dbg_drain(), called
+// right after e_nativeRender()) -- a context that has called debugPrintf
+// safely for every "patches: ..." line in every boot log this whole
+// session, so there's no new risk introduced there.
+//
+// Logs the same six scroll-state fields as before: the per-frame
+// camera-follow target (+0x350/+0x354), the interpolated "current" value
+// (+0x358/+0x35c), and the final derived pair (+0x368/+0x36c). Reading
+// them at Scroll()'s entry means we see exactly what last frame finished
+// with -- real end-to-end state, not a mid-computation snapshot.
+//
+// This is read-only with respect to game logic -- it changes nothing
+// about how the camera actually behaves, only what gets written to
+// debug.log. Remove the call to apply_field_scroll_debug_log() (and
+// the drain call in main.c) once the drift is diagnosed.
+// ---------------------------------------------------------------------------
+
+// Encode: movz x<rd>, #imm16, lsl #(16*hw)   (64-bit form, hw = 0..3)
+static uint32_t movz_x(int rd, uint16_t imm16, int hw) {
+  return 0xD2800000u | ((uint32_t)(hw & 3) << 21) | ((uint32_t)imm16 << 5) | (uint32_t)rd;
+}
+// Encode: movk x<rd>, #imm16, lsl #(16*hw)
+static uint32_t movk_x(int rd, uint16_t imm16, int hw) {
+  return 0xF2800000u | ((uint32_t)(hw & 3) << 21) | ((uint32_t)imm16 << 5) | (uint32_t)rd;
+}
+// Encode: b <target>  (unconditional, PC-relative, +-128MB range)
+static uint32_t encode_b(uintptr_t from_addr, uintptr_t to_addr) {
+  int64_t off = (int64_t)to_addr - (int64_t)from_addr;
+  uint32_t imm26 = (uint32_t)((off / 4) & 0x3FFFFFF);
+  return 0x14000000u | imm26;
+}
+// Write 4 instructions that load a 64-bit absolute address into x<rd>.
+static void write_abs64(uintptr_t at, int rd, uint64_t val) {
+  uint32_t words[4] = {
+    movz_x(rd, (uint16_t)(val >>  0), 0),
+    movk_x(rd, (uint16_t)(val >> 16), 1),
+    movk_x(rd, (uint16_t)(val >> 32), 2),
+    movk_x(rd, (uint16_t)(val >> 48), 3),
+  };
+  for (int i = 0; i < 4; i++)
+    __builtin_memcpy((void *)(at + i * 4), &words[i], 4);
+}
+// Encode: ldr w<rt>, [x<rn>, #byte_off]  (byte_off must be a multiple of 4, 0..16380)
+static uint32_t ldr_w_imm(int rt, int rn, uint32_t byte_off) {
+  return 0xB9400000u | (((byte_off / 4) & 0xFFFu) << 10) | ((uint32_t)rn << 5) | (uint32_t)rt;
+}
+// Encode: str w<rt>, [x<rn>, #byte_off]
+static uint32_t str_w_imm(int rt, int rn, uint32_t byte_off) {
+  return 0xB9000000u | (((byte_off / 4) & 0xFFFu) << 10) | ((uint32_t)rn << 5) | (uint32_t)rt;
+}
+// Encode: add w<rd>, w<rn>, #imm12
+static uint32_t add_w_imm(int rd, int rn, uint32_t imm12) {
+  return 0x11000000u | ((imm12 & 0xFFFu) << 10) | ((uint32_t)rn << 5) | (uint32_t)rd;
+}
+// (ldr_x_imm / add_x_imm12_lsl12 / cbz_x encoders removed here -- they only
+// existed to support the offX/offY and ChronoCanvas-accumulator reads that
+// were cut from apply_field_scroll_debug_log after repeated crashes despite
+// passing every static check available. If a future attempt needs a
+// pointer-indirection read again, the encodings were: ldr x<rt>,[x<rn>,#off]
+// = 0xF9400000 | (((off/8)&0xFFF)<<10) | (rn<<5) | rt; add x<rd>,x<rn>,
+// #imm12,lsl#12 = 0x91400000 | ((imm12&0xFFF)<<10) | (rn<<5) | rd; cbz
+// x<rt>,<byte_offset> = 0xB4000000 | (((byte_offset/4)&0x7FFFF)<<5) | rt.)
+
+// Lives in the HOMEBREW's own process memory (ct_nx.elf), NOT inside
+// libchrono.so -- so_finalize() locks the .so's executable segment
+// Read+Execute-only early in boot and never makes it writable again; a
+// mutable cell would have to live outside it regardless of what writes to
+// it. seq is bumped every time the hook runs; main.c's drain function
+// polls it to know when there's new data to print, and to avoid ever
+// printing the same frame's data twice.
+typedef struct {
+  volatile uint32_t seq;
+  float tX, tY;   // per-frame camera-follow target  (+0x350/+0x354)
+  float cX, cY;   // interpolated "current" value    (+0x358/+0x35c)
+  float fX, fY;   // final derived pair               (+0x368/+0x36c)
+  // Added while chasing the "final pair looks like a near-constant offset"
+  // finding below: the render-plane extent (historically measured
+  // 432x224 art-px -- see apply_field_camera_centering's disabled-function
+  // comment) and the screen-shake/offset pair that fX/fY are built from.
+  // Disassembly of the real Scroll() in this build shows fX/fY are NOT a
+  // simple function of tX/tY/cX/cY alone -- they also fold in planeW/planeH
+  // (+0x330/+0x334) and this offset pair, plus three literal immediates
+  // (-64.0, 216.0, 256.0) that apply_field_view_zoom's zoom-rescaling never
+  // touched. Capturing these lets us tell, from real logs at different
+  // zoom settings, whether those literals need to become zoom-dependent
+  // too -- rather than guessing a fourth unverified change to this
+  // register-heavy function after the last three each shipped a new,
+  // different visible bug (see that comment for the history).
+  int32_t planeW, planeH;   // +0x330/+0x334, render-plane extent (art px)
+  // (Note: the fY = 360/zoom - 256 formula and fX's constant -64.0 were
+  // already fully confirmed from the five existing logs without needing
+  // offX/offY -- so nothing analytical is lost by cutting them.)
+  // REMOVED (this pass): offX/offY (via this->+0x458->+0xf88/+0xf8c) and
+  // the 8-field ChronoCanvas accumulator block (via mpInstance->+0x134f0
+  // range). Both were re-verified as statically sound -- I traced the
+  // REAL Scroll() in this exact binary and confirmed it dereferences
+  // this->+0x458 completely unconditionally with no null-check as
+  // literally its first action after the prologue (so that pointer is
+  // always valid whenever Scroll() runs at all), and confirmed
+  // ChronoCanvas is a real ~118KB allocation (found its actual `operator
+  // new` call site: 0x1CFF8 bytes), so the accumulator reads are nowhere
+  // near out-of-bounds either. Every static check available says both
+  // additions should be safe -- and the build still crashed on save
+  // resume regardless. Rather than add a fourth or fifth "verified but
+  // still crashes" layer on top of a technique that has now failed
+  // repeatedly despite passing every check I know how to run, both are
+  // cut here. The remaining fields below are exactly the set that
+  // already produced five clean, real, crash-free logs across zoom
+  // 1.0-3.0 in an earlier session -- known-good, not re-guessed.
+} ScrollDbgSnapshot;
+static ScrollDbgSnapshot s_scroll_dbg_snap = {0};
+
+static void apply_field_scroll_debug_log(so_module *mod) {
+  // Same cave as before -- independently re-verified all-zero and inside
+  // the R+X segment for this exact binary. This is back down to the
+  // minimal field set (tX/tY/cX/cY/fX/fY/planeW/planeH, ~30 instructions
+  // / ~120 bytes total) -- the offX/offY and ChronoCanvas-accumulator
+  // additions have been removed after repeated crashes despite passing
+  // every static check available (see ScrollDbgSnapshot's comment above).
+  const uint32_t CAVE_CODE = 0xd0118;
+  const uint32_t ENTRY      = 0x576ec8;   // FieldMap::Scroll first instr
+  const uint32_t RESUME     = 0x576ecc;   // instr right after it
+
+  uintptr_t base        = (uintptr_t)mod->load_base;
+  uintptr_t code_addr    = base + CAVE_CODE;
+  uintptr_t entry_addr   = base + ENTRY;
+  uintptr_t resume_addr  = base + RESUME;
+
+  // Struct field byte offsets -- computed by THIS compiler from the real
+  // struct, not hand-derived, so they can't drift out of sync with
+  // whatever padding/layout the compiler actually chose.
+  const uint32_t OFF_SEQ    = (uint32_t)offsetof(ScrollDbgSnapshot, seq);
+  const uint32_t OFF_TX     = (uint32_t)offsetof(ScrollDbgSnapshot, tX);
+  const uint32_t OFF_TY     = (uint32_t)offsetof(ScrollDbgSnapshot, tY);
+  const uint32_t OFF_CX     = (uint32_t)offsetof(ScrollDbgSnapshot, cX);
+  const uint32_t OFF_CY     = (uint32_t)offsetof(ScrollDbgSnapshot, cY);
+  const uint32_t OFF_FX     = (uint32_t)offsetof(ScrollDbgSnapshot, fX);
+  const uint32_t OFF_FY     = (uint32_t)offsetof(ScrollDbgSnapshot, fY);
+  const uint32_t OFF_PLANEW = (uint32_t)offsetof(ScrollDbgSnapshot, planeW);
+  const uint32_t OFF_PLANEH = (uint32_t)offsetof(ScrollDbgSnapshot, planeH);
+
+  // Register read/write-set check (re-run this pass) confirms x0, s0, and
+  // x30 are never written anywhere in the body -- only x9, x10, sp are.
+  // This is exactly the field set (tX/tY/cX/cY/fX/fY/planeW/planeH), all
+  // direct offsets on 'this' with zero pointer-chasing, that already
+  // produced five clean, crash-free logs in an earlier session.
+  uint32_t off = 0;
+  #define EMIT(w) do { uint32_t _w = (w); __builtin_memcpy((void*)(code_addr+off), &_w, 4); off += 4; } while (0)
+  // x9 = &s_scroll_dbg_snap (homebrew RW memory)
+  write_abs64(code_addr + off, 9, (uint64_t)&s_scroll_dbg_snap); off += 16;
+  // Copy each field: ldr w10,[x0,#src] ; str w10,[x9,#dst]. x0 is only
+  // ever read here (never a destination), so it's automatically still
+  // the correct 'this' pointer when we fall through into Scroll() below.
+  EMIT(ldr_w_imm(10, 0, 0x350)); EMIT(str_w_imm(10, 9, OFF_TX));
+  EMIT(ldr_w_imm(10, 0, 0x354)); EMIT(str_w_imm(10, 9, OFF_TY));
+  EMIT(ldr_w_imm(10, 0, 0x358)); EMIT(str_w_imm(10, 9, OFF_CX));
+  EMIT(ldr_w_imm(10, 0, 0x35c)); EMIT(str_w_imm(10, 9, OFF_CY));
+  EMIT(ldr_w_imm(10, 0, 0x368)); EMIT(str_w_imm(10, 9, OFF_FX));
+  EMIT(ldr_w_imm(10, 0, 0x36c)); EMIT(str_w_imm(10, 9, OFF_FY));
+  // planeW/planeH: direct fields on 'this', same shape as above.
+  EMIT(ldr_w_imm(10, 0, 0x330)); EMIT(str_w_imm(10, 9, OFF_PLANEW));
+  EMIT(ldr_w_imm(10, 0, 0x334)); EMIT(str_w_imm(10, 9, OFF_PLANEH));
+  EMIT(ldr_w_imm(10, 9, OFF_SEQ));
+  EMIT(add_w_imm(10, 10, 1));
+  EMIT(str_w_imm(10, 9, OFF_SEQ));
+  EMIT(0xd103c3ff); // sub sp, sp, #0xf0   re-execute the displaced instruction
+  EMIT(encode_b(code_addr + off, resume_addr)); // b back into Scroll()
+  #undef EMIT
+
+  const PatchEntry e[1] = {
+    { NULL, 0, ENTRY, 0xd103c3ff, encode_b(entry_addr, code_addr),
+      "Scroll: entry hook -> scroll-debug snapshot cave (no calls, TEMPORARY)" },
+  };
+  apply_patches(mod, e, 1);
+}
+
+// Call once per real frame from main.c's loop (a context proven safe for
+// debugPrintf all session). Only actually prints when the snapshot has
+// genuinely new data (seq changed) AND at most a few times a second, so a
+// 15-30s capture stays a readable size instead of one line per frame.
+static void scroll_dbg_drain(void) {
+  static uint32_t last_printed_seq = 0xFFFFFFFFu;
+  static int frames_since_print = 0;
+  frames_since_print++;
+  uint32_t seq = s_scroll_dbg_snap.seq;
+  if (seq == last_printed_seq) return;   // no new data since last print
+  if (frames_since_print < 15) return;   // throttle to ~4x/sec at 60fps
+  frames_since_print = 0;
+  last_printed_seq = seq;
+  extern Config config;
+  debugPrintf("scroll dbg: tX=%.1f tY=%.1f cX=%.1f cY=%.1f fX=%.1f fY=%.1f "
+              "planeW=%d planeH=%d zoom=%g\n",
+              (double)s_scroll_dbg_snap.tX, (double)s_scroll_dbg_snap.tY,
+              (double)s_scroll_dbg_snap.cX, (double)s_scroll_dbg_snap.cY,
+              (double)s_scroll_dbg_snap.fX, (double)s_scroll_dbg_snap.fY,
+              (int)s_scroll_dbg_snap.planeW, (int)s_scroll_dbg_snap.planeH,
+              (double)config.field_zoom);
+}
+
+// ---------------------------------------------------------------------------
+// apply_field_engine_registration_y -- DISABLED, round-7 post-mortem (not
+// called anywhere -- kept for history like the other retired attempts).
+//
+// REVERTED after real-hardware testing, three independent findings:
+//
+//   1. ResetScrollAddress is NOT entry-only. The battle camera re-invokes
+//      it while tracking enemy positions, and the fineY-seeding cave
+//      (patch B) re-applied the 7-px phase on every call -- fighting
+//      AutoScroll's own fine integration and producing constant vertical
+//      shaking in battles. The "runs once per room entry" premise held for
+//      field walking (all three static callers ARE entry/warp paths) but
+//      battles reach it through a path the caller audit missed.
+//
+//   2. The target was wrong anyway: 210/zoom came from treating the
+//      engine's internal 192-art window as what stock displays (112/192 =
+//      58.3%). Stock actually DISPLAYS a 216-art window (viewH = 216,
+//      y-scale 1.66667) -- the character sits at 112 * 1.66667 = 186.67
+//      design px (~52%). So even where this patch "worked", the character
+//      still sat visibly low, scaling with zoom.
+//
+//   3. The layer was wrong: patching the engine camera moves EVERYTHING
+//      that consumes it (battle framing, scripted pans, edge clamping)
+//      to chase a render-side registration goal. The render side already
+//      has the correct, single, everything-stays-coherent lever: viewH,
+//      whose formula in apply_field_view_zoom positions the visible
+//      window outright (tY = camTopArt + viewH - planeH pins the visible
+//      bottom at camTop + viewH). See apply_field_view_zoom's header for
+//      the full corrected model. Scrolling was never the disease -- it
+//      was the symptom.
+//
+// The mechanism analysis in the original header below (entry registration
+// persists through DoScroll's lockstep pair-add; single shared ret; w9
+// dead; edge branches untouched) remains disassembly-true and is kept for
+// reference -- it was the premise and the target that were wrong, not the
+// instruction-level work.
+// ---------------------------------------------------------------------------
+// [Original header follows]
+//
+// apply_field_engine_registration_y -- THE vertical centering fix, applied at
+// the engine camera's ONE source of truth instead of any render-side copy.
+//
+// WHY THE CHARACTER SITS LOW AT ZOOM 2.0 (root cause, finally complete):
+//
+// The vertical registration is not set by FieldMap::Scroll, setScroll, the
+// node position, or the render limits -- it is set ONCE per room entry by
+// FieldImpl::ResetScrollAddress and then merely PRESERVED by everything else:
+//
+//   1. ResetScrollAddress(this, tileX, tileY) -- runs on every room entry /
+//      warp (all three callers verified: FieldMap::setScroll 0x576d24, plus
+//      0x5811bc and 0x58d15c, all via the PLT stub 0xb400a0) -- places the
+//      camera window top at
+//            camTop = 2*tileY - 14   [chips; 1 chip = 8 art px]
+//      in the general mid-map case (0x576e98-0x576ea8), i.e. exactly 112
+//      art px above the player's tile row. The near-top / near-bottom
+//      branches clamp to the map edge instead. Its tail (0x576e70-0x576e7c)
+//      zeroes the fine (sub-chip) offsets and returns through a single
+//      shared ret at 0x576e80.
+//
+//   2. FieldImpl::DoScroll integrates the camera incrementally as the player
+//      walks: fineY at state+0x1b4 (masked &0xf, chip-borrow tested &7 --
+//      0x59d064/0x59d07c/0x59d114, so ANY initial phase 0..7 integrates
+//      cleanly), and, decisively, its tail at 0x59d688-0x59d6b0 adds the
+//      accumulated chip delta to camTop AND camBottom as a PAIR
+//      (ldr d1,[x8,#0x18]; add v0.2s; str d0) -- it never re-derives one
+//      from the other and never re-enforces the 24-chip height. The entry
+//      registration therefore persists verbatim through all walking.
+//
+//   3. FieldMap::Scroll (0x5779fc-0x577a6c, this exact binary) converts that
+//      state to the render target every frame:
+//            camTopArt = camTop*8 + (fineY & 7)     [state+0x18 == the
+//                                     "[x28,#8]" chip field; +0x1b4 == the
+//                                     "[x28,#0x1a4]" fine field -- the two
+//                                     struct bases differ by 0x10, verified
+//                                     by three independent field matches]
+//            tY (+0x354) = camTopArt + viewH - planeH
+//      so the character's art-px offset from the view TOP is the constant
+//      the engine chose: 112. On screen that is 112*zoom design px --
+//      zoom-DEPENDENT: 210 at stock 1.875, 224 at 2.0 (14 px too low, the
+//      exact symptom), 196 at 1.75 (14 px high, why 1.75 "looked centered").
+//      Cross-checked against the real debug logs: tY = camTopArt+viewH-planeH
+//      reproduces every logged value, and fX/fY = (-64, viewH-256) fall
+//      straight out of the same disassembly with scroll cancelling -- also
+//      matching all five logs bit-for-bit.
+//
+// THE FIX: keep the character at the STOCK screen registration (what you see
+// with field_pixel_perfect off) at every zoom, by making the entry gap
+// zoom-aware:  gap = 210/zoom art px  (== 112 at 1.875, no-op by identity).
+// Split into chips + sub-chip residual:  8*N - f = 210/zoom,  f in [0,7]:
+//
+//   zoom 1.875 -> N=14, f=0   (bit-identical stock, patch skips itself)
+//   zoom 2.0   -> N=14, f=7   (chip constant UNCHANGED -- the entire fix is
+//                              a 7-art-px fine phase; char rises 14 design px)
+//   zoom 1.75  -> N=15, f=0   (char drops 14 design px to match stock)
+//   zoom 3.0   -> N=9,  f=2
+//
+// Patch A (chip part): the single mid-map constant at 0x576e9c
+// (sub w10,w9,#14 -> #N). The edge-clamped branches are NOT touched, so
+// entry/clamp behavior at map edges stays byte-identical to today.
+//
+// Patch B (residual, only when f != 0): the shared ret at 0x576e80 branches
+// to a 3-instruction cave that seeds fineY AFTER the tail has zeroed it:
+//       movz w9, #f
+//       str  w9, [x8, #0xc]     ; x8 = state+0x1a8 here (set at 0x576e74),
+//                               ; so +0xc == state+0x1b4 == fineY
+//       ret
+// w9 is dead at the ret (last written at 0x576e24/0x576e30, consumed by
+// 0x576e2c) and x8 is exactly state+0x1a8 on every path -- ALL branches of
+// the function funnel through this one tail, so the phase is seeded on
+// every entry type uniformly.
+//
+// WHY THIS CANNOT DESYNC PLANE FROM SPRITES (the failure that killed the
+// direct Scroll()-tY attempt): the shift lands on the single upstream camera
+// state that every consumer reads -- render tY, the tile-recycler window,
+// the engine's own gating -- so it is indistinguishable from the camera
+// legitimately standing 7 art px elsewhere, a state normal walking passes
+// through constantly.
+//
+// WHY THIS IS NOT THE FAILED chips=14->12 EXPERIMENT (round 6): that patch
+// also moved camBottom (+10 -> +12), changing the window's bottom extent
+// that entry-time edge logic pairs with map bounds -- and it was tested only
+// as a fixed 12, wrong at every zoom. This patch leaves camBottom stock, and
+// DoScroll's verified pair-add means top and bottom are never re-derived
+// from each other afterward, so the (harmless) height difference persists
+// without anything re-normalizing it.
+//
+// EDGE MARGINS (checked, not assumed): the drawn plane window and the
+// visible view are BOTH anchored to camTop, so a camTop bias moves the map
+// under the view without changing view-vs-drawn-window alignment -- the
+// class of black-bar bug from the node_y attempts is structurally impossible
+// here. Bottom-clamped entries: at zoom 2.0 the view bottom moves from
+// (map edge - 12 art) to (map edge - 5 art), still inside; at 1.75 the chip
+// change moves today's +13.7-art overshoot (already absorbed fine by the
+// zoom-aware render limits) to +5.7 -- strictly safer.
+//
+// KNOWN RESIDUALS to watch for on hardware, both cosmetic and bounded:
+//   (a) DoScroll's special top snap (gated on map id 0x7f, 0x59d0b0-0x59d0cc)
+//       zeroes fineY -- on that one map the 7-px residual is lost until the
+//       next room entry (chip part unaffected).
+//   (b) Scripted pans (atel_fscroll/atel_vfscroll write ABSOLUTE chip targets
+//       to state+0x8/+0xc; AutoScroll converges camTop to them) frame at
+//       script-authored positions -- unchanged from the current build. If a
+//       post-cutscene "return to player" ever reseeds registration with
+//       stock constants, it would revert until the next map entry; the
+//       candidate site is CheckScroll's target-box writer at 0x5a1780
+//       (the #0x70 constant). Not patched blind -- only if testing shows it.
+// ---------------------------------------------------------------------------
+__attribute__((unused))
+static void apply_field_engine_registration_y(so_module *mod, float zoom) {
+  if (zoom < 0.05f) zoom = 0.05f;  // guard: div-by-zero
+
+  const float gap_art = 210.0f / zoom;      // required char->camTop gap, art px
+  int n_chips = (int)(gap_art / 8.0f);      // floor...
+  if ((float)n_chips * 8.0f < gap_art - 0.01f) n_chips++;   // ...to ceil
+  int f_px = (int)((float)n_chips * 8.0f - gap_art + 0.5f); // residual, 0..7
+  if (f_px < 0) f_px = 0;
+  if (f_px > 7) f_px = 7;
+  if (n_chips < 1) n_chips = 1;
+  if (n_chips > 0xfff) n_chips = 0xfff;     // sub imm12 range
+
+  const PatchEntry chip = { NULL, 0, 0x576e9c, 0x5100392a,
+    0x51000000u | ((uint32_t)(n_chips & 0xFFF) << 10) | (9u << 5) | 10u,
+    "ResetScrollAddress: mid-map camera-top gap 14 chips -> ceil((210/zoom)/8)" };
+  apply_patches(mod, &chip, 1);
+
+  if (f_px == 0)
+    return;  // gap divisible by 8 (1.875, 1.75, ...): chips alone are exact
+
+  const uint32_t CAVE     = 0xd047c;   // verified all-zero, R+X segment,
+                                        // 12 bytes used, no other patch or
+                                        // loader reference touches it
+  const uint32_t RET_SITE = 0x576e80;  // the function's single shared ret
+
+  uintptr_t base = (uintptr_t)mod->load_base;
+  uintptr_t cave = base + CAVE;
+
+  uint32_t off = 0;
+  #define EMIT(w) do { uint32_t _w = (w); __builtin_memcpy((void*)(cave+off), &_w, 4); off += 4; } while (0)
+  EMIT(movz_w(9, (uint16_t)f_px));  // w9 = f  (w9 verified dead at the ret)
+  EMIT(str_w_imm(9, 8, 0xc));       // fineY (state+0x1b4) = f; x8 = state+0x1a8
+  EMIT(0xd65f03c0);                 // ret
+  #undef EMIT
+
+  const PatchEntry hook = { NULL, 0, RET_SITE, 0xd65f03c0,
+    encode_b(base + RET_SITE, cave),
+    "ResetScrollAddress: ret -> fineY-residual cave (sub-chip camera phase)" };
+  apply_patches(mod, &hook, 1);
+}
 
 // ---------------------------------------------------------------------------
 // The identical hard-coded (1.875, 1.66667) setScale(x,y) pattern also
@@ -956,8 +2076,81 @@ static inline void apply_game_patches(so_module *mod) {
   }
 
   if (config.field_pixel_perfect) {
-    debugPrintf("patches: applying field_pixel_perfect\n");
+    debugPrintf("patches: applying field_pixel_perfect (zoom=%g)\n", config.field_zoom);
     apply_patches(mod, g_field_pixel_perfect_patches, PATCH_COUNT(g_field_pixel_perfect_patches));
+    // View/FOV size FIRST, blit scale second -- order doesn't matter functionally
+    // (different instruction sites) but this reads in the order data flows:
+    // decide how much map is captured, then how big that capture is drawn.
+    apply_field_view_zoom(mod, config.field_zoom);
+    apply_field_zoom(mod, config.field_zoom);
+    // apply_field_scroll_anchor and apply_field_scroll_pivot_y are NOT
+    // called -- both are kept above only as dead history (see their own
+    // header comments for why each was superseded).
+    //
+    // CURRENT STATE, X and Y fixed via two completely different mechanisms
+    // because they needed different ones (see apply_field_node_anchor's
+    // header for the full history of why Y took five attempts):
+    //
+    //   X: apply_field_node_anchor shifts the fieldmap NODE itself --
+    //      node_x = 320 - 128*zoom. Proven exact, ample real margin at
+    //      every zoom, unchanged since it first worked.
+    //
+    //   Y: handled entirely inside apply_field_view_zoom's viewH formula
+    //      now (see its header: Scroll's tY pins the visible window
+    //      BOTTOM at camTop + viewH, so viewH positions the window --
+    //      viewH = 112 + 173.333/zoom keeps the character at stock's
+    //      186.67 design px at every zoom). Engine untouched, node
+    //      untouched: node_y in apply_field_node_anchor stays permanently
+    //      0.0 (node shifts for Y reintroduce black bars --
+    //      hardware-confirmed, three times), and the round-7 engine-side
+    //      attempt (apply_field_engine_registration_y below) is reverted
+    //      -- it broke the battle camera (see its post-mortem).
+    apply_field_node_anchor(mod, config.field_zoom);
+    // apply_field_engine_center_y(mod, config.field_zoom_y_anchor_chips);
+    // ^ DISABLED as of this session. Its premise -- that ResetScrollAddress's
+    // 14/24 chip split directly sets the character's on-screen vertical
+    // registration -- was verified only on the WRITE side (confirmed exactly
+    // which values get stored to state+0x18/+0x1c) but never traced on the
+    // READ side (what actually consumes those two fields downstream). Real
+    // hardware test at chips=12, zoom=3.0 made things WORSE, not better: the
+    // character sat lower and the bottom of the screen went missing / the
+    // character rendered partially off-screen -- a different, worse failure
+    // than before, which only makes sense if this window is NOT the
+    // character's screen-position registration point.
+    //
+    // Full disassembly of the function (every branch, all 3 cases per axis,
+    // the shared tail) shows the [Xmin,Xmax]/[Ymin,Ymax] pairs it produces
+    // look like edge-aware camera/scroll BOUNDS (a dead-zone or map-edge
+    // clamp range), not a direct registration offset -- consistent with the
+    // regression, since narrowing/shifting that range could change WHEN
+    // clamping kicks in without ever being what centers the character during
+    // ordinary walking. Left fully documented and disabled (not deleted)
+    // pending real data, rather than another blind patch.
+    //
+    // Current state: X is centered exactly right (apply_field_node_anchor,
+    // proven correct at every zoom). Y is handled by apply_field_view_zoom's
+    // character-pinned viewH formula (visible-window positioning; see its
+    // header for the corrected model) -- node_y stays fixed 0.0, its
+    // confirmed-safe, zero-black-bar, zero-clipping baseline, and the
+    // engine camera is byte-for-byte stock again (battles depend on it).
+
+    // TEMPORARY -- see apply_field_scroll_debug_log's header comment.
+    // Logs Scroll()'s per-frame camera-follow state to debug.log so the
+    // "drifts left/down while walking" bug can be diagnosed from real
+    // numbers instead of screenshots. Remove this call once done.
+    //
+    // RE-ENABLED: the prior crash was isolated by pulling this exact call
+    // -- with it removed, debug.log showed the game boot fully, write a
+    // save (common.bin + slot + meta.bin) twice, with no crash. That
+    // confirms the crash is gone with the hook off. Before re-enabling,
+    // the cave (0xd0118) and entry patch were independently re-verified
+    // against this build's actual libchrono.so: the target bytes are
+    // still genuinely zero, the ENTRY instruction is still the expected
+    // stock word, both PT_LOAD-segment and instruction/branch-encoding
+    // checks pass, and this loader (so_util.c) never reads the ELF
+    // section that cave address happens to sit in (checked -- no "hash"
+    // reference anywhere in the loader), so it's safe to write over.
+    apply_field_scroll_debug_log(mod);
   }
 
   if (config.game_area_width_fix) {
