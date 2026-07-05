@@ -13,7 +13,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 TARGET		:=	ct_nx
 APP_TITLE	:=	CHRONO TRIGGER
 APP_AUTHOR	:=	naga, ppkantorski
-APP_VERSION	:=	1.0.2
+APP_VERSION	:=	1.1.0
 BUILD		:=	build
 SOURCES		:=	source
 DATA		:=	data
@@ -28,7 +28,7 @@ ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CFLAGS	:=	-g -Wall -O3 -ffunction-sections -flto \
             -fuse-linker-plugin -fomit-frame-pointer -finline-small-functions \
             -fno-strict-aliasing -frename-registers -falign-functions=16 \
-            -ftree-vectorize \
+            -ftree-vectorize -ffast-math -fno-unwind-tables -fno-asynchronous-unwind-tables \
 			$(ARCH) $(DEFINES)
 
 CFLAGS	+=	$(INCLUDE) -D__SWITCH__
@@ -37,7 +37,7 @@ CFLAGS	+=	$(INCLUDE) -D__SWITCH__
 #CFLAGS += -DEBUG_INSTR=0
 
 
-CXXFLAGS	:= $(CFLAGS) -std=c++26 -Wno-dangling-else -ffast-math -fno-unwind-tables -fno-asynchronous-unwind-tables 
+CXXFLAGS	:= $(CFLAGS) -std=c++26 -Wno-dangling-else
 
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
