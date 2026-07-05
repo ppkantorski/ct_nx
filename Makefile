@@ -12,7 +12,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	ct_nx
 APP_TITLE	:=	CHRONO TRIGGER
-APP_AUTHOR	:=	naga
+APP_AUTHOR	:=	naga, ppkantorski
 APP_VERSION	:=	1.0.2
 BUILD		:=	build
 SOURCES		:=	source
