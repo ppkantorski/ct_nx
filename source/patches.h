@@ -2761,6 +2761,204 @@ static void apply_map_node_anchor(so_module *mod, float zoom) {
 // compiler may arrange the instructions differently. We provide a dedicated
 // helper that scans the known function range.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 10.  text_alignment_fix
+//
+//     Equipment menu vertical text alignment + equip/stat icon centering.
+//
+//     SYMPTOM (720p measurements, cap-glyph top/bottom rows from real
+//     screenshots): the item-select list labels ("Wooden Sword", its qty "1")
+//     span rows 247-261; the stat column ("Strength : 9" .. "Magic Defense :
+//     6"), the category-button captions ("Bronze Blade" etc.), and the
+//     equipped-item info column (the "7"/"8"/"5" numbers and "Speed +1")
+//     span 244-258 on its row -- a uniform 3-screen-px (= 1.5 design-unit at
+//     the 2x handheld scale) HIGH offset. The HP/MP/LV/EXP/Next block above
+//     "Strength" is NOT part of this -- it was never misaligned against
+//     anything else on the page and must stay exactly where stock puts it.
+//
+//     ROOT CAUSE (from disassembly of the two label pipelines):
+//       * openItemSelectNode (0x70b6d8) -- the only correct one -- places
+//         its labels ANCHOR_MIDDLE_LEFT at y = buttonHeight * 0.5, i.e.
+//         truly vertically centred whatever the label box height is.
+//       * The stat/button/info-column labels are TOP-anchored with
+//         hand-tuned offsets that assume a 16-unit label box: top-anchored
+//         text matches middle-anchored text only when
+//         (buttonHeight/2 + labelH/2) == chosen top offset, and the
+//         offsets used (e.g. y = buttonHeight - 10 in
+//         createCategoryButtons) solve that for labelH = 16. The real
+//         ChronoType 12pt label box is 19 units tall, so every
+//         top-anchored label lands labelH/2 - 8 = 1.5 units high.
+//     Since the item list is both correct-by-construction and the page's
+//     dominant interactive element, the stat rows and everything keyed off
+//     them move DOWN 1.5 to match it. The top block is left untouched.
+//
+//     FOUR placement paths cover 100% of the page's text (verified by
+//     scanning every MenuNodeEquip function for createLabel / drawIcon /
+//     drawItemMsgSub / ParameterLabel::create call sites -- there are no
+//     others), each fixed by the mechanism that fits its code shape:
+//
+//     A. MenuNodeEquip::setupPageFixedLabels (0x708948) -- 35 static
+//        entries total, but only the 7 stat-name/colon/value-column rows
+//        ("Strength" @ y=-106 down through "Magic Defense" @ y=-232, step
+//        21) need to move; the HP/MP/LV/EXP/Next block and its weapon/
+//        shield icons (y=-44..-76) must not. The 35 Y constants are
+//        materialised six different ways (rodata Vec2 literals, packed
+//        MOVZ+MOVK pairs, lone MOVZ floats), so a per-site immediate edit
+//        can't discriminate the two groups cheaply -- instead the
+//        entry-emission loop head is hooked once, and the cave itself
+//        gates on the value: loop at 0x709b40..0x709bac walks the
+//        0x38-byte stack entries ({type, Vec2 pos, string, anchor, icon})
+//        dispatching to drawIcon (type 1) / createLabel (type 0); head
+//        instruction 0x709b70 `ldr w8,[x21,x20]` (both loop-entry paths
+//        land here) is displaced into a cave that reads entry->pos.y,
+//        compares its raw bits (unsigned) against the bit pattern for
+//        -90.0f -- a clean midpoint between the top block's shallowest row
+//        (-76) and the stats' deepest (-106), and safe because IEEE-754
+//        bit patterns of same-sign floats preserve magnitude ordering
+//        under unsigned compare -- and only applies -1.5 when the entry is
+//        at or past the stats band (y <= -90, i.e. bits >= 0xC2B40000).
+//        Entries above the threshold fall through untouched. x8/x9/s0/s1
+//        are all dead/call-clobbered at the hook point and carry nothing
+//        across the loop; entries rebuild on the stack every call, so the
+//        adjustment can't accumulate.
+//        Cave: 0xaa7b30, a 96-byte verified-zero inter-function padding
+//        run in the same padding neighbourhood as the two proven caves at
+//        0xaa56a0/0xaa6270 (both re-checked: no overlap, and this loader
+//        never reads that region). Uses 44 of the 96 bytes.
+//
+//     B. MenuNodeEquip::setupPageParameterLabels (0x70a110) -- ONLY the
+//        seven live-updating stat values at x=132 (Strength..Magic
+//        Defense) move; the three top-block values (HP-row @ (236,-44),
+//        weapon-row @ (236,-60), defense-row @ (332,-60)) are deliberately
+//        left unpatched -- the pristine .so already has them exactly
+//        where they belong. Each moved literal is single-xref (confirmed
+//        by a binary-wide adrp+ldr scan), so the Y float is patched in
+//        place -- a data patch, so the 0.5 fractions are exact.
+//
+//     C. MenuNodeEquip::createCategoryButtons (0x70ae10) -- button caption
+//        + in-button item icon both derive y from s11 = buttonHeight + s10
+//        with s10 loaded once by `fmov s10,#-10.0` (only use of s10 in the
+//        function); -11.5 is FMOV-imm8 encodable, so one word changes and
+//        caption + icon move DOWN together, preserving their relative
+//        alignment to each other. That still leaves the icon's own visual
+//        centre sitting low against the caption's cap-height (measured
+//        avg +1.75 design-units low across the three unfocused buttons:
+//        Bronze Helm/Hide Tunic/Headband, 2.5/4.5/3.5 screen-px at 2x) --
+//        drawIcon (0x734a38) anchors TOP_LEFT, so its sprite's own
+//        vertical mass sits differently than a text cap-height box.
+//        Fixed with a second, icon-only hook at the icon's position store
+//        0x70b170 `str s11,[sp,#0x34]` (this exact stack slot is reused a
+//        few instructions later for the caption's own y -- unaffected,
+//        since the cave never writes to s11 itself, only to scratch s9).
+//        Cave @ 0xaa3db0 (80B verified-zero, s9 confirmed dead in-loop --
+//        its only two reads are both before the loop starts) computes
+//        s9 = s11 + 1.75 and stores that instead, for the icon only.
+//
+//     D. MenuNodeEquip::UpdateEquippedItemDescription (0x70a348) -- the
+//        per-category info column at x=310: container y = -110 - 42*cat
+//        (integer, via scvtf, so it can't take the .5 alone), value label
+//        at rodata (34,4) TOP_RIGHT, "Speed +1" msg-sub at rodata (40,4)
+//        (both literals single-xref, same scan as B). Text shift is split:
+//        container -110 -> -111 (-1.0) and both label literals 4.0 -> 3.5
+//        (-0.5), netting exactly -1.5 for the digit/message text. The
+//        little stat icon (dagger/shield, drawn via drawIcon at the
+//        container's local origin (0,0)) rides only the container's -1.0
+//        and was measured sitting a further ~3.8 design-units low against
+//        the digit's cap-height (avg of 8.0/7.5/7.5 screen-px at 2x across
+//        the three visible rows) -- same TOP_LEFT-anchor-vs-cap-height
+//        mismatch as (C). Fixed with a hook at the icon-position write
+//        0x70a42c `str xzr,[sp,#8]` (originally zeroing the whole Vec2):
+//        cave @ 0xaa4af0 (80B verified-zero) writes a packed
+//        Vec2(0.0, 3.75) instead (single MOVZ, since only one 16-bit
+//        chunk of the 64-bit pattern is non-zero), moving the icon up
+//        3.75 units local to the already-shifted container -- x9 is dead
+//        here (caller-saved, and about to be clobbered by the drawIcon
+//        call regardless).
+//
+//     Icon-centring deltas (C: 1.75, D: 3.75) are measured/averaged from
+//     screenshots against irregular sprite art rather than derived from an
+//     exact geometric formula like the text fix was, so treat them as a
+//     strong first pass -- nudge the two literal constants in the cave
+//     bodies below (fmov s9,#1.75 / the 3.75 in the Vec2 pack) if hardware
+//     testing shows either icon family needs a touch more or less.
+//
+//     NOT touched, deliberately: the HP/MP/LV/EXP/Next block and its
+//     weapon/shield icons, the bottom description bar and "Equipment" tab
+//     (shared with every other menu), the item-select list itself (the
+//     reference), the portrait/star sprites, pager dots, arrows, and
+//     scrollbar.
+//
+//     All old words byte-verified against this exact libchrono.so.
+//     Boot-time patch; menus are rebuilt per entry so no state carries.
+// ---------------------------------------------------------------------------
+static const PatchEntry g_text_alignment_patches[] = {
+
+  // --- A. setupPageFixedLabels: -1.5 on stat rows ONLY (y <= -90), via
+  //        gated loop hook. Top block (y > -90) falls through untouched.
+  P_RAW(0x709b70, 0xb8746aa8, 0x140e77f0,
+    "setupPageFixedLabels loop head ldr w8,[x21,x20] -> b 0xaa7b30 (gated y-shift cave)"),
+
+  // Cave @ 0xaa7b30 (96B zero padding; entry 0x709b70 -> 0xaa7b30, both
+  // exits round-trip-verified: b.lo -> 0xaa7b54 (displaced load, skip
+  // path), tail b -> 0x709b74 (resume loop). Uses 44 of 96 bytes.
+  P_CAVE(0xaa7b30, 0x8b1402a8, "cave: add x8,x21,x20 (entry ptr)"),
+  P_CAVE(0xaa7b34, 0xbd400900, "cave: ldr s0,[x8,#8] (pos.y)"),
+  P_CAVE(0xaa7b38, 0x1e260009, "cave: fmov w9,s0 (raw bits of y)"),
+  P_CAVE(0xaa7b3c, 0x52b8568a, "cave: mov w10,#0xc2b40000 (-90.0f threshold)"),
+  P_CAVE(0xaa7b40, 0x6b0a013f, "cave: cmp w9,w10 (unsigned: bigger bits = more negative = lower row)"),
+  P_CAVE(0xaa7b44, 0x54000083, "cave: b.lo 0xaa7b54 (top block: skip shift)"),
+  P_CAVE(0xaa7b48, 0x1e3f1001, "cave: fmov s1,#-1.5"),
+  P_CAVE(0xaa7b4c, 0x1e212800, "cave: fadd s0,s0,s1"),
+  P_CAVE(0xaa7b50, 0xbd000900, "cave: str s0,[x8,#8]"),
+  P_CAVE(0xaa7b54, 0xb8746aa8, "cave: ldr w8,[x21,x20] (displaced original; both paths land here)"),
+  P_CAVE(0xaa7b58, 0x17f18807, "cave: b 0x709b74 (resume loop)"),
+
+  // --- B. setupPageParameterLabels: rodata Vec2 Y halves, STAT ROWS ONLY
+  //        (the 3 top-block values are intentionally absent from this
+  //        list -- the pristine binary already has them right).
+  P_RAW(0x36198c, 0xc2d40000, 0xc2d70000, "param Vec2 (132,-106) y -> -107.5 (Strength value)"),
+  P_RAW(0x361244, 0xc2fe0000, 0xc3008000, "param Vec2 (132,-127) y -> -128.5 (Accuracy value)"),
+  P_RAW(0x36116c, 0xc3140000, 0xc3158000, "param Vec2 (132,-148) y -> -149.5 (Speed value)"),
+  P_RAW(0x361314, 0xc3290000, 0xc32a8000, "param Vec2 (132,-169) y -> -170.5 (Magic value)"),
+  P_RAW(0x361504, 0xc33e0000, 0xc33f8000, "param Vec2 (132,-190) y -> -191.5 (Evasion value)"),
+  P_RAW(0x361754, 0xc3530000, 0xc3548000, "param Vec2 (132,-211) y -> -212.5 (Stamina value)"),
+  P_RAW(0x3613a4, 0xc3680000, 0xc3698000, "param Vec2 (132,-232) y -> -233.5 (Magic Def value)"),
+
+  // --- C. createCategoryButtons: caption+icon drop 1.5 together, then the
+  //        icon gets an additional solo +1.75 to centre on the caption.
+  P_RAW(0x70ae7c, 0x1e34900a, 0x1e34f00a,
+    "createCategoryButtons fmov s10,#-10.0 -> #-11.5 (caption+icon drop 1.5)"),
+
+  P_RAW(0x70b170, 0xbd0037eb, 0x140e6310,
+    "createCategoryButtons icon y store str s11,[sp,#0x34] -> b 0xaa3db0 (icon-only +1.75 cave)"),
+
+  // Cave @ 0xaa3db0 (80B verified-zero; entry 0x70b170 -> 0xaa3db0, tail
+  // b -> 0x70b174 round-trip-verified). s9 confirmed dead at this point
+  // (its only two reads are both before the per-button loop begins).
+  P_CAVE(0xaa3db0, 0x1e2f9009, "cave: fmov s9,#1.75 (icon centring offset)"),
+  P_CAVE(0xaa3db4, 0x1e2b2929, "cave: fadd s9,s9,s11 (icon y = caption y + 1.75)"),
+  P_CAVE(0xaa3db8, 0xbd0037e9, "cave: str s9,[sp,#0x34] (icon only; caption's later write of s11 is untouched)"),
+  P_CAVE(0xaa3dbc, 0x17f19cee, "cave: b 0x70b174 (resume)"),
+
+  // --- D. UpdateEquippedItemDescription: container -1.0, labels -0.5 (net
+  //        -1.5 for text), then the stat icon gets a solo local +3.75 to
+  //        centre on the digit/message.
+  P_RAW(0x70a394, 0x12800da9, 0x12800dc9,
+    "equip-info container base mov w9,#-110 -> #-111"),
+  P_RAW(0x36192c, 0x40800000, 0x40600000, "equip-info value Vec2 (34,4) y -> 3.5"),
+  P_RAW(0x36150c, 0x40800000, 0x40600000, "equip-info msg-sub Vec2 (40,4) y -> 3.5"),
+
+  P_RAW(0x70a42c, 0xf90007ff, 0x140e69b1,
+    "equip-info icon pos store str xzr,[sp,#8] -> b 0xaa4af0 (icon-only +3.75 cave)"),
+
+  // Cave @ 0xaa4af0 (80B verified-zero; entry 0x70a42c -> 0xaa4af0, tail
+  // b -> 0x70a430 round-trip-verified). x9 dead here (caller-saved, about
+  // to be clobbered by the drawIcon call regardless).
+  P_CAVE(0xaa4af0, 0xd2e80e09, "cave: mov x9,#0x4070000000000000 (packed Vec2(0.0,3.75))"),
+  P_CAVE(0xaa4af4, 0xf90007e9, "cave: str x9,[sp,#8] (icon local pos, was (0,0))"),
+  P_CAVE(0xaa4af8, 0x17f1964e, "cave: b 0x70a430 (resume)"),
+};
+
 static void apply_bilinear_patches(so_module *mod) {
   // Locate the two target functions in the symbol table.
   uintptr_t iwm_base = 0, iwm_size = 0;  // initWithMipmaps
@@ -2955,6 +3153,11 @@ static inline void apply_game_patches(so_module *mod) {
   if (config.game_area_width_fix) {
     debugPrintf("patches: applying game_area_width_fix\n");
     apply_patches(mod, g_gamearea_patches, PATCH_COUNT(g_gamearea_patches));
+  }
+
+  if (config.text_alignment_fix) {
+    debugPrintf("patches: applying text_alignment_fix\n");
+    apply_patches(mod, g_text_alignment_patches, PATCH_COUNT(g_text_alignment_patches));
   }
 
   if (config.ui_scale_fix) {

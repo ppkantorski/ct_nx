@@ -210,6 +210,24 @@ typedef struct {
   // binary patch -- changing this in config.ini requires a game relaunch;
   // the live config reload deliberately does not (and cannot) re-patch.
   int game_area_width_fix;
+  // text_alignment_fix -- 1 = fix the Equipment menu's vertical text
+  // misalignment: every label the equip page itself places (the seven
+  // stat rows Strength..Magic Defense and their values, the HP/MP/EXP top
+  // block, the category-button captions "Bronze Blade" etc., and the
+  // equipped-item info column: the stat numbers and "Speed +1" text) sits
+  // exactly 1.5 design units (3 screen px at 720p) HIGHER than the
+  // item-select list labels ("Wooden Sword"), which are the only
+  // correctly placed text on the page. Root cause: the item list centers
+  // its labels (ANCHOR_MIDDLE_LEFT at y = buttonHeight*0.5) while every
+  // other label on the page is TOP-anchored with offsets that assume a
+  // 16-unit label box; the real ChronoType 12pt label box is 19 units
+  // tall, so top-anchored text lands labelHeight/2 - 8 = 1.5 units high.
+  // Shifts all four placement paths down 1.5 in lockstep (see patches.h
+  // section 10 for the per-site mechanism). Screenshot-verified: the
+  // offset is exactly 3px at 720p on every affected row. Equip menu only;
+  // no other menu shares these code paths. Boot-time binary patch:
+  // relaunch to change.
+  int text_alignment_fix;
   // field_zoom_fix -- 1 = set the field view's design->art densities to
   // exactly 1/2 on both axes (see patches.h section 9). View becomes 320x180
   // art px: art pixels are square AND integer (4px handheld / 6px docked) in
