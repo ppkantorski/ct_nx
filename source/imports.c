@@ -672,7 +672,7 @@ static void glBufferSubData_snap(GLenum target, GLintptr offset,
 // "some columns wider than others" under nearest-neighbour sampling, even
 // when X and Y agree with each other.
 // ---------------------------------------------------------------------------
-#define DIAG_MVP 1
+#define DIAG_MVP 0
 #if DIAG_MVP
 static void mvp_log(const char *fmt, ...) {
   FILE *f = fopen("gl_mvp.log", "a");

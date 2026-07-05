@@ -16,9 +16,16 @@
  *                         (remove_bilinear.py)
  *
  *   remove_mobile_ui   -- hide the on-screen touch-overlay buttons: field
- *                         menu button, world-map menu/map/warp buttons, and
- *                         all five right-side title-screen icon buttons
- *                         (remove_mobile_ui.py v8)
+ *                         menu button, world-map menu/map/warp buttons, all
+ *                         five right-side title-screen icon buttons
+ *                         (remove_mobile_ui.py v8), AND the back/close touch
+ *                         buttons drawn in the bottom-right corner of every
+ *                         menu-system status bar (Equip/Item/Tech/Config/
+ *                         SaveLoad/Formation, and the top-level Main Menu
+ *                         bar) -- letting those bars reuse their own
+ *                         existing full-width "no button" layout instead of
+ *                         leaving a gap (remove_menu_buttons.py v1, folded
+ *                         into this same feature/config flag)
  *
  * Every patch entry records the old word so we can verify the .so matches
  * the expected build before writing anything. A mismatch prints a warning
@@ -264,13 +271,26 @@ static const PatchEntry g_bilinear_patches[] = {
 };
 
 // ---------------------------------------------------------------------------
-// 3.  remove_mobile_ui  (remove_mobile_ui.py v8)
+// 3.  remove_mobile_ui  (remove_mobile_ui.py v8 + remove_menu_buttons.py v1)
 //
 //     Fix 1: FieldMenu::setMenuAvailable -- field button always hidden,
 //             VirtualController::setActive (Start key) still works
 //     Fix 2: world-map MENU/MAP/WARP buttons -- setPosition->setVisible(false)
 //     Fix 3: right-side title icon buttons -- hide+setSkip via cave at 0xaa6270
+//     Fix 4: menu-system status bar back/close buttons (Equip/Item/Tech/
+//             Config/SaveLoad/Formation, and the top Main Menu bar) --
+//             see Fix 4's own comment below for the full derivation
 // ---------------------------------------------------------------------------
+
+// Fix 4 targets: both overloads of nsMenu::StatusBar::init are exported in
+// .dynsym, so (like remove_bilinear above) we anchor on the symbol rather
+// than a hardcoded raw vaddr -- more robust to a future rebuild shifting
+// code around.
+#define STATUSBAR_INIT4_SYM \
+  "_ZN6nsMenu9StatusBar4initERKNSt6__ndk112basic_stringIcNS1_11char_" \
+  "traitsIcEENS1_9allocatorIcEEEEbRKNS1_8functionIFvPN7cocos2d3RefEEEESH_"
+#define STATUSBAR_INIT5_SYM STATUSBAR_INIT4_SYM "b"
+
 static const PatchEntry g_mobile_ui_patches[] = {
 
   // Fix 1: FieldMenu::setMenuAvailable(bool)
@@ -321,6 +341,84 @@ static const PatchEntry g_mobile_ui_patches[] = {
   // Fix 3c: RET-stub UpdateIconVisible so it can never re-show icons
   P_RAW(0x780CC8, 0xA9BD7BFD, 0xD65F03C0,
     "UpdateIconVisible RET-stub: icons stay hidden"),
+
+  // -------------------------------------------------------------------------
+  // Fix 4: menu-system status bar back/close buttons (remove_menu_buttons.py)
+  //
+  //     Targets the menu SYSTEM screens (Equip, Item, Tech, Config,
+  //     SaveLoad, Formation, and the top-level Main Menu bar) instead of
+  //     the field/world-map/title-screen overlays Fixes 1-3 handle. All of
+  //     those screens share one reusable header class, nsMenu::StatusBar,
+  //     built via one of two overloads of nsMenu::StatusBar::init(...):
+  //
+  //       * 4-arg overload  (title, bool, backCallback, closeCallback)
+  //           -- used by MenuNodeEquip/Item/Tech/Config/SaveLoad/Formation
+  //       * 5-arg overload  (..., isTopBar)
+  //           -- same body plus an isTopBar-style branch; patched
+  //              defensively even though every verified caller resolves
+  //              to the 4-arg one
+  //
+  //     Disassembly-confirmed structure shared by both overloads:
+  //
+  //         ldr  x8, [x20, #0x320]      ; backCallback std::function target
+  //         cbz  x8, <no_back_button>   ; null -> skip creating back button
+  //         ...                         ; non-null -> createBackButton(...),
+  //                                     ;   subtracting its width from bar
+  //         <no_back_button>:
+  //         mov  w8, #0x43f00000        ; float 480.0 -- full design width,
+  //         fmov s0, w8                 ;   used as the bar width instead
+  //
+  //         ldr  x8, [x20, #0x350]      ; closeCallback std::function target
+  //         cbz  x8, <no_close_button>  ; null -> skip creating close button
+  //         ...                         ; non-null -> createCloseButton(...),
+  //                                     ;   same width-subtraction pattern
+  //         <no_close_button>:
+  //         ...                         ; falls through with whichever
+  //                                     ;   width was computed above
+  //
+  //     That "no button, full-width bar" path already exists and already
+  //     runs whenever a caller passes an empty std::function for either
+  //     callback -- it is not new logic. This forces the CBZ gate to
+  //     always take the skip branch, for every StatusBar, regardless of
+  //     what the caller passed, by converting each CBZ into an
+  //     unconditional B to the exact same target the CBZ already pointed
+  //     at (the branch target is link-time-relative, so translating the
+  //     whole .so to a different runtime load_base -- as so_util does --
+  //     does not change it).
+  //
+  //     Net effect: no menu screen ever creates a back or close button
+  //     node, and the Main Menu / location / time / money bars resize to
+  //     the full region instead of leaving a gap where the button used to
+  //     sit. Controller "cancel" input is untouched: these button nodes
+  //     are purely visual touch targets wired to their own std::function
+  //     callbacks; nothing else in the input pipeline depends on their
+  //     existence. Verified safe to always-skip: StatusBar's constructor
+  //     zero-initializes both the backButton/closeButton node-pointer
+  //     fields and the backCallback/closeCallback std::function slots, and
+  //     both StatusBar::setInteractive and the destructor null-check the
+  //     button pointers before touching them -- so never allocating the
+  //     nodes is a clean, well-defined state, not a dangling-pointer risk.
+  // -------------------------------------------------------------------------
+
+  // 4-arg overload: back-button gate @ +0x160 (CBZ X8,+0x40 -> B +0x40)
+  P_SYM(STATUSBAR_INIT4_SYM, 0x160, 0xB4000208, 0x14000010,
+    "StatusBar::init(4-arg) back button: force existing 'no button' skip "
+    "branch (was conditional on backCallback == null)"),
+
+  // 4-arg overload: close-button gate @ +0x258 (CBZ X8,+0xF0 -> B +0xF0)
+  P_SYM(STATUSBAR_INIT4_SYM, 0x258, 0xB4000788, 0x1400003C,
+    "StatusBar::init(4-arg) close button: force existing 'no button' skip "
+    "branch (was conditional on closeCallback == null)"),
+
+  // 5-arg overload: back-button gate @ +0x17C (CBZ X8,+0x40 -> B +0x40)
+  P_SYM(STATUSBAR_INIT5_SYM, 0x17C, 0xB4000208, 0x14000010,
+    "StatusBar::init(5-arg) back button: force existing 'no button' skip "
+    "branch"),
+
+  // 5-arg overload: close-button gate @ +0x2D8 (CBZ X8,+0x154 -> B +0x154)
+  P_SYM(STATUSBAR_INIT5_SYM, 0x2D8, 0xB4000AA8, 0x14000055,
+    "StatusBar::init(5-arg) close button: force existing 'no button' skip "
+    "branch"),
 };
 
 // ---------------------------------------------------------------------------

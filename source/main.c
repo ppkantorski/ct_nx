@@ -986,7 +986,15 @@ int main(void) {
       e_keyEvent(fake_env, thiz, AK_BACK, 0); // key up
     }
 
+#if DEBUG_INSTR
+    static u64 fi_freq2 = 0;
+    if (!fi_freq2) fi_freq2 = armGetSystemTickFreq();
+    const u64 t_render_start = armGetSystemTick();
+#endif
     e_nativeRender(fake_env);
+#if DEBUG_INSTR
+    const u64 t_render_end = armGetSystemTick();
+#endif
     // TEMPORARY -- drains the scroll-centering diagnostic snapshot that
     // apply_field_scroll_debug_log() (patches.h) writes into homebrew
     // memory every time FieldMap::Scroll() runs. Safe to call every frame
@@ -1000,6 +1008,11 @@ int main(void) {
     // state and hands control back. On normal frames it's a no-op (returns 0).
     if (!movie_post_render(s_display, s_surface))
       eglSwapBuffers(s_display, s_surface);
+#if DEBUG_INSTR
+    const u64 t_present_end = armGetSystemTick();
+    const u64 render_us  = (t_render_end  - t_render_start) * 1000000ull / fi_freq2;
+    const u64 present_us = (t_present_end - t_render_end)   * 1000000ull / fi_freq2;
+#endif
 
     jni_ime_service(); // show swkbd for a pending EditBox, outside nativeRender
 
@@ -1017,6 +1030,12 @@ int main(void) {
     {
       static u64 fi_freq = 0, fi_last = 0, fi_t0 = 0;
       static u32 fi_frames = 0, fi_o16 = 0, fi_o33 = 0, fi_max_us = 0;
+      // NEW: separate accumulators so we can see WHICH half of the frame
+      // (engine render vs present/vsync-wait) actually owns the time --
+      // a core/GPU-load overlay can't distinguish "busy" from "blocked in
+      // WaitSynchronization", so this measures it directly instead.
+      static u64 fi_render_sum = 0, fi_present_sum = 0;
+      static u32 fi_render_max = 0, fi_present_max = 0;
       if (!fi_freq) { fi_freq = armGetSystemTickFreq(); fi_last = fi_t0 = armGetSystemTick(); }
       const u64 nowt = armGetSystemTick();
       const u64 us = (nowt - fi_last) * 1000000ull / fi_freq;
@@ -1025,16 +1044,26 @@ int main(void) {
       if (us > 17000) fi_o16++;            // overran one vsync
       if (us > 34000) fi_o33++;            // dropped a whole frame
       if (us > fi_max_us) fi_max_us = (u32)us;
+      fi_render_sum  += render_us;
+      fi_present_sum += present_us;
+      if ((u32)render_us  > fi_render_max)  fi_render_max  = (u32)render_us;
+      if ((u32)present_us > fi_present_max) fi_present_max = (u32)present_us;
       if ((nowt - fi_t0) * 1000ull / fi_freq >= 5000) {
         FILE *fl = fopen("frametime.log", "a");
         if (fl) {
           const double secs = (double)(nowt - fi_t0) / (double)fi_freq;
-          fprintf(fl, "frames=%u avg=%.2fms max=%.1fms over17ms=%u over34ms=%u\n",
+          fprintf(fl, "frames=%u avg=%.2fms max=%.1fms over17ms=%u over34ms=%u "
+                      "render_avg=%.2fms render_max=%.1fms present_avg=%.2fms present_max=%.1fms\n",
                   fi_frames, fi_frames ? secs * 1000.0 / fi_frames : 0.0,
-                  fi_max_us / 1000.0, fi_o16, fi_o33);
+                  fi_max_us / 1000.0, fi_o16, fi_o33,
+                  fi_frames ? (double)fi_render_sum  / fi_frames / 1000.0 : 0.0,
+                  fi_render_max / 1000.0,
+                  fi_frames ? (double)fi_present_sum / fi_frames / 1000.0 : 0.0,
+                  fi_present_max / 1000.0);
           fclose(fl);
         }
         fi_frames = fi_o16 = fi_o33 = fi_max_us = 0; fi_t0 = nowt;
+        fi_render_sum = fi_present_sum = 0; fi_render_max = fi_present_max = 0;
       }
     }
 #endif
