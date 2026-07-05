@@ -18,14 +18,23 @@
  *   remove_mobile_ui   -- hide the on-screen touch-overlay buttons: field
  *                         menu button, world-map menu/map/warp buttons, all
  *                         five right-side title-screen icon buttons
- *                         (remove_mobile_ui.py v8), AND the back/close touch
+ *                         (remove_mobile_ui.py v8), the back/close touch
  *                         buttons drawn in the bottom-right corner of every
  *                         menu-system status bar (Equip/Item/Tech/Config/
  *                         SaveLoad/Formation, and the top-level Main Menu
  *                         bar) -- letting those bars reuse their own
  *                         existing full-width "no button" layout instead of
  *                         leaving a gap (remove_menu_buttons.py v1, folded
- *                         into this same feature/config flag)
+ *                         into this same feature/config flag) -- AND the
+ *                         on-screen touch buttons built by
+ *                         SceneSpecialRace::setMenu for Johnny's motorcycle
+ *                         race minigame (every button the function creates,
+ *                         across both of its sub-race layouts) -- AND the
+ *                         green/yellow/red/blue color-button prompts for
+ *                         dance/QTE scenes and the cursor/passcode minigame
+ *                         variant, via VirtualPad::openVPad's setVisible
+ *                         toggle (construction is left untouched; only
+ *                         ever-shown-visible is suppressed)
  *
  * Every patch entry records the old word so we can verify the .so matches
  * the expected build before writing anything. A mismatch prints a warning
@@ -280,6 +289,15 @@ static const PatchEntry g_bilinear_patches[] = {
 //     Fix 4: menu-system status bar back/close buttons (Equip/Item/Tech/
 //             Config/SaveLoad/Formation, and the top Main Menu bar) --
 //             see Fix 4's own comment below for the full derivation
+//     Fix 5: SceneSpecialRace::setMenu -- on-screen touch buttons for
+//             Johnny's motorcycle race minigame -- see Fix 5's own comment
+//             below for the full derivation
+//     Fix 6: VirtualPad::openVPad -- suppress the setVisible(true) calls
+//             that show the green/yellow/red/blue color-button prompts
+//             (dance/QTE scenes and the cursor/passcode variant) --
+//             construction untouched, visibility-only -- see Fix 6's own
+//             comment below for the full derivation, including why the
+//             first (reverted) attempt crashed
 // ---------------------------------------------------------------------------
 
 // Fix 4 targets: both overloads of nsMenu::StatusBar::init are exported in
@@ -290,6 +308,14 @@ static const PatchEntry g_bilinear_patches[] = {
   "_ZN6nsMenu9StatusBar4initERKNSt6__ndk112basic_stringIcNS1_11char_" \
   "traitsIcEENS1_9allocatorIcEEEEbRKNS1_8functionIFvPN7cocos2d3RefEEEESH_"
 #define STATUSBAR_INIT5_SYM STATUSBAR_INIT4_SYM "b"
+
+// Fix 5 target: SceneSpecialRace::setMenu, also exported in .dynsym --
+// anchored on the symbol for the same reason as Fix 4 above.
+#define RACE_SETMENU_SYM "_ZN16SceneSpecialRace7setMenuEPN7cocos2d4NodeE"
+
+// Fix 6 target: VirtualPad::openVPad, exported in .dynsym -- anchored on
+// the symbol for the same reason as Fix 4/5 above.
+#define VPAD_OPENVPAD_SYM "_ZN10VirtualPad8openVPadEv"
 
 static const PatchEntry g_mobile_ui_patches[] = {
 
@@ -419,6 +445,190 @@ static const PatchEntry g_mobile_ui_patches[] = {
   P_SYM(STATUSBAR_INIT5_SYM, 0x2D8, 0xB4000AA8, 0x14000055,
     "StatusBar::init(5-arg) close button: force existing 'no button' skip "
     "branch"),
+
+  // -------------------------------------------------------------------------
+  // Fix 5: SceneSpecialRace::setMenu -- Johnny's motorcycle race on-screen
+  //         touch buttons
+  //
+  //     SceneSpecialRace::setMenu(cocos2d::Node* menuParent) is exported in
+  //     .dynsym (size 2076 bytes) and is the sole place this scene builds
+  //     its touch-button overlay -- confirmed by an inlined literal string
+  //     "button" built via movz/movk immediates near the top of the
+  //     function, and by every button-creation block ending in the exact
+  //     same two-call pattern already proven out in Fix 2/3 above:
+  //
+  //         ldr  x8, [x8, #0xc8]     ; vtable slot: cocos2d::Node::setPosition
+  //         ...                      ; s0/s1 loaded with float x/y immediates
+  //         blr  x8
+  //
+  //     A run-time flag at this+0xc20 (set earlier in ::init from a race
+  //     sub-mode ID) selects between two layouts:
+  //
+  //       * sub-mode flag set:   builds 2 buttons (fields this+0x5440,
+  //                               this+0x5448)
+  //       * sub-mode flag clear: builds 4 buttons -- one anonymous button
+  //                               (only ever pushed into the button vector,
+  //                               never stored to a named field) plus the
+  //                               SAME this+0x5440 / this+0x5448 fields
+  //                               (rebuilt with different on-screen
+  //                               coordinates for this layout) plus a 4th
+  //                               button at this+0x5450
+  //
+  //     Both layouts funnel into a shared tail that wraps everything built
+  //     so far into a button container (this+0x5458) and adds it to
+  //     menuParent -- we deliberately do NOT touch that container call
+  //     (unconfirmed vtable slot 0x98, not the well-established 0xC8/0x170
+  //     Node pair used everywhere else in this file); patching the 6
+  //     individual button-creation sites below hides every button in both
+  //     layouts without needing to touch that unverified call.
+  //
+  //     Same technique as Fix 2's world-map buttons: convert the
+  //     setPosition(x,y) call into setVisible(false) --
+  //
+  //         ldr  x8, [x8, #0xc8]   ->   ldr  x8, [x8, #0x170]   (setVisible)
+  //         fmov s1, w10           ->   mov  w1, wzr             (bool=false)
+  //         blr  x8
+  //
+  //     The overwritten fmov/fadd instruction in each pair only ever fed
+  //     the now-unused s0/s1 position registers -- verified dead once the
+  //     call becomes setVisible(bool) instead of setPosition(float,float).
+  //     Where the "this" pointer for the virtual call is set up via a
+  //     nearby `mov x0,x22` (anonymous button) or an earlier `ldr x0,[x20,
+  //     #0x5450]` (4th button), those loads are left untouched.
+  // -------------------------------------------------------------------------
+
+  // sub-mode-flag-set layout: button @ this+0x5440
+  P_SYM(RACE_SETMENU_SYM, 0x138, 0xF9406508, 0xF940B908,
+    "SceneSpecialRace::setMenu +0x138 button(0x5440) [flag-set layout] "
+    "setPosition->setVisible vtable slot"),
+  P_SYM(RACE_SETMENU_SYM, 0x148, 0x1E270141, 0x2A1F03E1,
+    "SceneSpecialRace::setMenu +0x148 button(0x5440) [flag-set layout] "
+    "bool arg=false"),
+
+  // sub-mode-flag-set layout: button @ this+0x5448
+  P_SYM(RACE_SETMENU_SYM, 0x200, 0xF9406508, 0xF940B908,
+    "SceneSpecialRace::setMenu +0x200 button(0x5448) [flag-set layout] "
+    "setPosition->setVisible vtable slot"),
+  P_SYM(RACE_SETMENU_SYM, 0x210, 0x1E270141, 0x2A1F03E1,
+    "SceneSpecialRace::setMenu +0x210 button(0x5448) [flag-set layout] "
+    "bool arg=false"),
+
+  // flag-clear layout: anonymous button (button vector only, no named field)
+  P_SYM(RACE_SETMENU_SYM, 0x380, 0xF9406508, 0xF940B908,
+    "SceneSpecialRace::setMenu +0x380 anonymous button [flag-clear layout] "
+    "setPosition->setVisible vtable slot"),
+  P_SYM(RACE_SETMENU_SYM, 0x390, 0x1E270120, 0x2A1F03E1,
+    "SceneSpecialRace::setMenu +0x390 anonymous button [flag-clear layout] "
+    "bool arg=false"),
+
+  // flag-clear layout: button @ this+0x5440 (rebuilt at different coords)
+  P_SYM(RACE_SETMENU_SYM, 0x444, 0xF9406508, 0xF940B908,
+    "SceneSpecialRace::setMenu +0x444 button(0x5440) [flag-clear layout] "
+    "setPosition->setVisible vtable slot"),
+  P_SYM(RACE_SETMENU_SYM, 0x454, 0x1E270141, 0x2A1F03E1,
+    "SceneSpecialRace::setMenu +0x454 button(0x5440) [flag-clear layout] "
+    "bool arg=false"),
+
+  // flag-clear layout: button @ this+0x5448 (rebuilt at different coords)
+  P_SYM(RACE_SETMENU_SYM, 0x510, 0xF9406508, 0xF940B908,
+    "SceneSpecialRace::setMenu +0x510 button(0x5448) [flag-clear layout] "
+    "setPosition->setVisible vtable slot"),
+  P_SYM(RACE_SETMENU_SYM, 0x520, 0x1E270141, 0x2A1F03E1,
+    "SceneSpecialRace::setMenu +0x520 button(0x5448) [flag-clear layout] "
+    "bool arg=false"),
+
+  // flag-clear layout only: 4th button @ this+0x5450
+  P_SYM(RACE_SETMENU_SYM, 0x618, 0xF9406508, 0xF940B908,
+    "SceneSpecialRace::setMenu +0x618 button(0x5450) [flag-clear layout] "
+    "setPosition->setVisible vtable slot"),
+  P_SYM(RACE_SETMENU_SYM, 0x628, 0x1E232821, 0x2A1F03E1,
+    "SceneSpecialRace::setMenu +0x628 button(0x5450) [flag-clear layout] "
+    "bool arg=false"),
+
+  // -------------------------------------------------------------------------
+  // Fix 6: VirtualPad::openVPad -- green/yellow/red/blue color-button
+  //         prompts (dance scene and other generic input/QTE scenes)
+  //
+  //     First attempt at this fix (now reverted) tried to NOP the call to
+  //     VirtualPad::setupColorButtons out of VirtualPad::init, reasoning
+  //     that the call site's return value was discarded and the callee was
+  //     purely cosmetic (no nsStateMachine/nsInput::Manager references,
+  //     unlike setupCursorColorButtons/setupPasscodeButtons). That was
+  //     wrong: the callee doesn't just build cosmetics, it also STORES the
+  //     created Menu* into VirtualPad::this+0x360 --
+  //
+  //         bl   Menu::createWithArray(...)
+  //         str  x0, [x20, #0x360]      ; <-- required side effect
+  //         ...
+  //         ldr  x0, [x20, #0x360]
+  //         ldr  x8, [x0]
+  //         ldr  x8, [x8, #0x170]       ; setVisible
+  //         mov  w1, wzr
+  //         blr  x8                     ; starts hidden by default
+  //
+  //     Skipping the call left this+0x360 uninitialized. VirtualPad::
+  //     openVPad() later does `ldr x0,[this,#0x360]; cbz x0,<skip>; ldr
+  //     x8,[x0]; ldr x8,[x8,#0x170]; blr x8` with NO null-check on garbage
+  //     memory being non-zero -- an unconditional vtable-slot dereference
+  //     off whatever was already sitting at that heap offset. That is the
+  //     crash the person hit on the button-prompt page. Lesson: a callee
+  //     whose only visible effect at its single call site is "return value
+  //     discarded" can still be required for a *sibling* member field a
+  //     totally different function depends on -- discarded-return does not
+  //     mean side-effect-free, and this file's own "don't skip
+  //     construction, only flip the final setVisible" philosophy (every
+  //     other Fix in this table) exists precisely to avoid this class of
+  //     bug. Applying it here properly this time:
+  //
+  //     VirtualPad::openVPad() (exported, 112 bytes) is the sole place
+  //     that flips these nodes visible. It touches three fields in order:
+  //
+  //       this+0x360 -- the setupColorButtons Menu (dance/QTE buttons)
+  //       this+0x368 -- the setupCursorColorButtons/setupPasscodeButtons
+  //                     container Node (confirmed via `str x20,[x19,#0x368]`
+  //                     in both of those functions' own disassembly)
+  //       this+0x370 -- nsMenu::nsInput::Manager* -- NOT a visual node;
+  //                     openVPad tail-calls nsInput::Manager::setPause(bool)
+  //                     on it (confirmed by resolving the tail-call target
+  //                     via .rela.plt) to un-pause input when the pad opens
+  //
+  //     Both of the first two follow the identical pattern already used
+  //     throughout this file -- cbz-guarded, vtable+0x170 (setVisible),
+  //     bool arg in w1:
+  //
+  //         ldr x0, [x19, #0x360]  (or #0x368)
+  //         cbz x0, <skip>
+  //         ldr x8, [x0]
+  //         mov w1, #1              ; true  <-- flip to wzr (false)
+  //         ldr x8, [x8, #0x170]
+  //         blr x8
+  //
+  //     Forcing both `mov w1,#1` sites to `mov w1,wzr` means every object
+  //     still gets fully constructed exactly as originally (this+0x360/
+  //     0x368/0x370 all end up valid, non-garbage pointers -- no more
+  //     uninitialized-memory risk), and closeVPad's own setVisible(false)
+  //     calls are already correct and untouched. The this+0x370 tail-call
+  //     to setPause(bool) is left completely alone, so input for the
+  //     cursor/passcode minigames keeps un-pausing/re-pausing exactly as
+  //     before -- this patch is visibility-only.
+  //
+  //     Net effect: covers BOTH the plain dance/QTE color buttons AND the
+  //     cursor/passcode variant's buttons (a strict improvement over the
+  //     original attempt's scope), with none of the construction-skipping
+  //     risk that caused the crash.
+  // -------------------------------------------------------------------------
+
+  // openVPad +0x34: this+0x360 (setupColorButtons Menu) setVisible(true)
+  // -> setVisible(false)
+  P_SYM(VPAD_OPENVPAD_SYM, 0x34, 0x52800021, 0x2A1F03E1,
+    "VirtualPad::openVPad +0x34 bool arg=false: color-button Menu "
+    "(this+0x360) stays hidden"),
+
+  // openVPad +0x4c: this+0x368 (cursor/passcode container Node)
+  // setVisible(true) -> setVisible(false)
+  P_SYM(VPAD_OPENVPAD_SYM, 0x4C, 0x52800021, 0x2A1F03E1,
+    "VirtualPad::openVPad +0x4C bool arg=false: cursor/passcode button "
+    "container (this+0x368) stays hidden"),
 };
 
 // ---------------------------------------------------------------------------
