@@ -2792,39 +2792,40 @@ static void apply_map_node_anchor(so_module *mod, float zoom) {
 //     dominant interactive element, the stat rows and everything keyed off
 //     them move DOWN 1.5 to match it. The top block is left untouched.
 //
-//     FOUR placement paths cover 100% of the page's text (verified by
-//     scanning every MenuNodeEquip function for createLabel / drawIcon /
-//     drawItemMsgSub / ParameterLabel::create call sites -- there are no
-//     others), each fixed by the mechanism that fits its code shape:
+//     FIVE placement paths cover 100% of the page's text and its portrait
+//     (verified by scanning every MenuNodeEquip function for createLabel /
+//     drawIcon / drawItemMsgSub / ParameterLabel::create /
+//     createWithSpriteFrameName call sites -- there are no others), each
+//     fixed by the mechanism that fits its code shape:
 //
 //     A. MenuNodeEquip::setupPageFixedLabels (0x708948) -- 35 static
-//        entries total, but only the 7 stat-name/colon/value-column rows
+//        entries total: the 7 stat-name/colon/value-column rows
 //        ("Strength" @ y=-106 down through "Magic Defense" @ y=-232, step
-//        21) need to move; the HP/MP/LV/EXP/Next block and its weapon/
-//        shield icons (y=-44..-76) must not. The 35 Y constants are
-//        materialised six different ways (rodata Vec2 literals, packed
-//        MOVZ+MOVK pairs, lone MOVZ floats), so a per-site immediate edit
-//        can't discriminate the two groups cheaply -- instead the
-//        entry-emission loop head is hooked once, and the cave itself
-//        gates on the value: loop at 0x709b40..0x709bac walks the
+//        21) move DOWN 1.5 to match the item list (see below); the
+//        HP/MP/LV/EXP/Next block and its weapon/shield icons (y=-44..-76)
+//        move UP 1.0 instead, to track the portrait fix in section E. The
+//        35 Y constants are materialised six different ways (rodata Vec2
+//        literals, packed MOVZ+MOVK pairs, lone MOVZ floats), so per-site
+//        immediate edits can't discriminate the groups cheaply -- instead
+//        the entry-emission loop head is hooked once, and the cave itself
+//        branches on the value: loop at 0x709b40..0x709bac walks the
 //        0x38-byte stack entries ({type, Vec2 pos, string, anchor, icon})
 //        dispatching to drawIcon (type 1) / createLabel (type 0); head
 //        instruction 0x709b70 `ldr w8,[x21,x20]` (both loop-entry paths
 //        land here) is displaced into a cave that reads entry->pos.y,
 //        compares its raw bits (unsigned) against the bit pattern for
 //        -90.0f -- a clean midpoint between the top block's shallowest row
-//        (-76) and the stats' deepest (-106), and safe because IEEE-754
-//        bit patterns of same-sign floats preserve magnitude ordering
-//        under unsigned compare -- and only applies -1.5 when the entry is
-//        at or past the stats band (y <= -90, i.e. bits >= 0xC2B40000).
-//        Entries above the threshold fall through untouched. x8/x9/s0/s1
-//        are all dead/call-clobbered at the hook point and carry nothing
-//        across the loop; entries rebuild on the stack every call, so the
-//        adjustment can't accumulate.
+//        (-76) and the stats' deepest (-106), safe because IEEE-754 bit
+//        patterns of same-sign floats preserve magnitude ordering under
+//        unsigned compare -- and applies -1.5 at or past the stats band
+//        (y <= -90, bits >= 0xC2B40000) or +1.0 above it (top block).
+//        x8/x9/s0/s1 are all dead/call-clobbered at the hook point and
+//        carry nothing across the loop; entries rebuild on the stack every
+//        call, so neither adjustment can accumulate.
 //        Cave: 0xaa7b30, a 96-byte verified-zero inter-function padding
 //        run in the same padding neighbourhood as the two proven caves at
 //        0xaa56a0/0xaa6270 (both re-checked: no overlap, and this loader
-//        never reads that region). Uses 44 of the 96 bytes.
+//        never reads that region). Uses 60 of the 96 bytes.
 //
 //     B. MenuNodeEquip::setupPageParameterLabels (0x70a110) -- ONLY the
 //        seven live-updating stat values at x=132 (Strength..Magic
@@ -2882,36 +2883,55 @@ static void apply_map_node_anchor(so_module *mod, float zoom) {
 //     bodies below (fmov s9,#1.75 / the 3.75 in the Vec2 pack) if hardware
 //     testing shows either icon family needs a touch more or less.
 //
-//     NOT touched, deliberately: the HP/MP/LV/EXP/Next block and its
-//     weapon/shield icons, the bottom description bar and "Equipment" tab
-//     (shared with every other menu), the item-select list itself (the
-//     reference), the portrait/star sprites, pager dots, arrows, and
-//     scrollbar.
+//     E. Portrait/top-row follow-up (added after real-hardware testing of
+//        A-D showed the character portrait sits a hair down-and-right on
+//        the Equip page versus the main menu list): the portrait moves
+//        UP+LEFT 1.0 unit each (2 screen-px at 2x) to cancel that offset
+//        outright, while the rest of its row (name, "LV", the "AttrIcon"
+//        element badge, and -- via section A's cave -- HP/MP/EXP/Next and
+//        the weapon/shield icons) moves UP 1.0 only, staying anchored to
+//        the portrait horizontally. See section E's own header, just above
+//        its patch entries below, for the exact site-by-site breakdown.
+//
+//     NOT touched, deliberately: the stats rows below "Strength" (section
+//     A's own -1.5 branch, unaffected by E), the bottom description bar and
+//     "Equipment" tab (shared with every other menu), the item-select list
+//     itself (the reference), the pager dots, arrows, and scrollbar.
 //
 //     All old words byte-verified against this exact libchrono.so.
 //     Boot-time patch; menus are rebuilt per entry so no state carries.
 // ---------------------------------------------------------------------------
 static const PatchEntry g_text_alignment_patches[] = {
 
-  // --- A. setupPageFixedLabels: -1.5 on stat rows ONLY (y <= -90), via
-  //        gated loop hook. Top block (y > -90) falls through untouched.
+  // --- A. setupPageFixedLabels: -1.5 on stat rows (y <= -90), +1.0 on the
+  //        top block (y > -90) -- both via one gated loop hook (see E).
   P_RAW(0x709b70, 0xb8746aa8, 0x140e77f0,
     "setupPageFixedLabels loop head ldr w8,[x21,x20] -> b 0xaa7b30 (gated y-shift cave)"),
 
-  // Cave @ 0xaa7b30 (96B zero padding; entry 0x709b70 -> 0xaa7b30, both
-  // exits round-trip-verified: b.lo -> 0xaa7b54 (displaced load, skip
-  // path), tail b -> 0x709b74 (resume loop). Uses 44 of 96 bytes.
+  // Cave @ 0xaa7b30 (96B zero padding; entry 0x709b70 -> 0xaa7b30). Now a
+  // TWO-WAY split instead of a skip: b.lo -> 0xaa7b5c (top block: +1.0,
+  // see section E header below for why), fallthrough -> stats band -1.5
+  // as before; both converge on the displaced load at 0xaa7b54 -> tail
+  // b -> 0x709b74 (resume loop). Uses 60 of 96 bytes.
   P_CAVE(0xaa7b30, 0x8b1402a8, "cave: add x8,x21,x20 (entry ptr)"),
   P_CAVE(0xaa7b34, 0xbd400900, "cave: ldr s0,[x8,#8] (pos.y)"),
   P_CAVE(0xaa7b38, 0x1e260009, "cave: fmov w9,s0 (raw bits of y)"),
   P_CAVE(0xaa7b3c, 0x52b8568a, "cave: mov w10,#0xc2b40000 (-90.0f threshold)"),
   P_CAVE(0xaa7b40, 0x6b0a013f, "cave: cmp w9,w10 (unsigned: bigger bits = more negative = lower row)"),
-  P_CAVE(0xaa7b44, 0x54000083, "cave: b.lo 0xaa7b54 (top block: skip shift)"),
+  P_CAVE(0xaa7b44, 0x540000c3, "cave: b.lo 0xaa7b5c (top block: +1.0 routine, was a skip)"),
   P_CAVE(0xaa7b48, 0x1e3f1001, "cave: fmov s1,#-1.5"),
   P_CAVE(0xaa7b4c, 0x1e212800, "cave: fadd s0,s0,s1"),
   P_CAVE(0xaa7b50, 0xbd000900, "cave: str s0,[x8,#8]"),
   P_CAVE(0xaa7b54, 0xb8746aa8, "cave: ldr w8,[x21,x20] (displaced original; both paths land here)"),
   P_CAVE(0xaa7b58, 0x17f18807, "cave: b 0x709b74 (resume loop)"),
+  // Top-block routine (E): +1.0 (2 screen-px at 2x -- see section E) on
+  // the name/LV/HP/MP/EXP/Next row and its weapon/shield icons, then
+  // rejoins the displaced load above. x8/s0 still live from the common
+  // prologue; s1 is free (its stats-band use above is a different path).
+  P_CAVE(0xaa7b5c, 0x1e2e1001, "cave: fmov s1,#1.0"),
+  P_CAVE(0xaa7b60, 0x1e212800, "cave: fadd s0,s0,s1"),
+  P_CAVE(0xaa7b64, 0xbd000900, "cave: str s0,[x8,#8]"),
+  P_CAVE(0xaa7b68, 0x17fffffb, "cave: b 0xaa7b54 (join displaced-load+resume tail)"),
 
   // --- B. setupPageParameterLabels: rodata Vec2 Y halves, STAT ROWS ONLY
   //        (the 3 top-block values are intentionally absent from this
@@ -2957,6 +2977,49 @@ static const PatchEntry g_text_alignment_patches[] = {
   P_CAVE(0xaa4af0, 0xd2e80e09, "cave: mov x9,#0x4070000000000000 (packed Vec2(0.0,3.75))"),
   P_CAVE(0xaa4af4, 0xf90007e9, "cave: str x9,[sp,#8] (icon local pos, was (0,0))"),
   P_CAVE(0xaa4af8, 0x17f1964e, "cave: b 0x70a430 (resume)"),
+
+  // --- E. setupPage's portrait + attribute-icon sprites, and the top-block
+  //        ParameterLabel trio: the last pieces of the equip page not
+  //        covered by A-D.
+  //
+  //        SYMPTOM: entering Equip visibly nudges the character portrait
+  //        down-and-right a hair versus its position on the main menu list
+  //        (2 screen-px at 2x handheld = 1.0 design-unit, each axis).
+  //        The rest of that same row (name, "LV", HP/MP, EXP/Next, and the
+  //        weapon/shield icons) isn't being compared against anything
+  //        off-page, but the user wants it visually anchored to the
+  //        portrait rather than left behind when the portrait moves --
+  //        so it moves UP the same 1.0 unit as the portrait, but NOT left
+  //        (only the portrait needs the horizontal correction, since nothing
+  //        else in that row is being asked to track the main-menu list).
+  //
+  //        Two sprites are created directly in setupPage (0x7084b0) itself,
+  //        outside the 35-entry loop the section-A cave gates on, so they
+  //        need their own direct edits:
+  //          - portrait (createWithSpriteFrameName from the character's own
+  //            param data) @ (12,-44) TOP_LEFT -> (11,-43): X -1.0 (left),
+  //            Y +1.0 (up). X is FMOV-imm8 encodable directly (11.0 =
+  //            (1+6/16)*2^3, same family as the original 12.0); Y goes
+  //            through the existing mov-bits+fmov-reg pattern already used
+  //            for -44.0, so only the immediate word changes.
+  //          - the small "menu/AttrIcon%d" element/attribute badge @
+  //            (68,-44) TOP_LEFT -> (68,-43): Y +1.0 only, matching the
+  //            "icons move up, not left" rule; its X-bits word is untouched.
+  //        Everything else in the row (the name/LV text and the weapon/
+  //        shield icons drawn per-entry) is part of the section-A 35-entry
+  //        loop and rides the cave's new top-block +1.0 branch above --
+  //        no separate edit needed here.
+  //
+  //        The three top-block ParameterLabel values EXCLUDED by section B
+  //        (HP-row (236,-44), weapon-row (236,-60), defense-row (332,-60))
+  //        get the same +1.0: still single-xref rodata (same scan as B),
+  //        so the Y float is patched in place, X untouched.
+  P_RAW(0x70864c, 0x1e251000, 0x1e24d000, "portrait sprite fmov s0,#12.0 -> #11.0 (X, left 1.0)"),
+  P_RAW(0x708648, 0x52b84609, 0x52b84589, "portrait sprite mov w9,Y-bits -44.0 -> -43.0 (up 1.0)"),
+  P_RAW(0x708710, 0x52b8460a, 0x52b8458a, "AttrIcon sprite mov w10,Y-bits -44.0 -> -43.0 (up 1.0 only)"),
+  P_RAW(0x3616c4, 0xc2300000, 0xc22c0000, "param Vec2 (236,-44) y -> -43.0 (HP-row value)"),
+  P_RAW(0x361abc, 0xc2700000, 0xc26c0000, "param Vec2 (236,-60) y -> -59.0 (weapon-row value)"),
+  P_RAW(0x361104, 0xc2700000, 0xc26c0000, "param Vec2 (332,-60) y -> -59.0 (defense-row value)"),
 };
 
 static void apply_bilinear_patches(so_module *mod) {
