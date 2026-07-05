@@ -45,15 +45,25 @@
   CONFIG_VAR_INT(cursor_fix); \
   CONFIG_VAR_INT(remove_bilinear_filter); \
   CONFIG_VAR_INT(fixed_timestep); \
-  CONFIG_VAR_INT(design_resolution_fix); \
+  CONFIG_VAR_INT(ui_scale_fix); \
   CONFIG_VAR_INT(force_nearest); \
   CONFIG_VAR_INT(game_area_width_fix); \
-  CONFIG_VAR_INT(field_pixel_perfect); \
+  CONFIG_VAR_INT(field_zoom_fix); \
   CONFIG_VAR_FLOAT(field_zoom); \
+  CONFIG_VAR_INT(map_zoom_fix); \
+  CONFIG_VAR_FLOAT(map_zoom); \
   CONFIG_COMMENT("--- Input / controller ---"); \
   CONFIG_VAR_INT(native_controller); \
   CONFIG_VAR_INT(controller_glyphs); \
-  CONFIG_VAR_INT(fix_diagonal_movement);
+  CONFIG_VAR_INT(fix_diagonal_movement); \
+  CONFIG_VAR_INT(right_stick_mirror);
+
+// Dev-only knobs: recognized on read (so they can still be hand-tuned in
+// config.ini) but deliberately left out of CONFIG_VARS above, so write_config
+// never emits them and a freshly generated config.ini never surfaces them to
+// end users. See map_zoom_y_trim's comment in config.h for why.
+#define CONFIG_VARS_HIDDEN \
+  CONFIG_VAR_FLOAT(map_zoom_y_trim);
 
 Config config;
 
@@ -67,6 +77,7 @@ static inline void parse_var(const char *name, const char *value) {
   #define CONFIG_VAR_STR(var) if (!strcmp(name, #var)) { strlcpy(config.var, value, sizeof(config.var)); return; }
   #define CONFIG_COMMENT(text) // no-op when parsing -- comments aren't real keys
   CONFIG_VARS
+  CONFIG_VARS_HIDDEN
   #undef CONFIG_VAR_INT
   #undef CONFIG_VAR_FLOAT
   #undef CONFIG_VAR_STR
@@ -91,10 +102,10 @@ static void set_defaults(void) {
   config.screen_width_docked = 1920;
   config.screen_height_docked = 1080;
   strlcpy(config.language, LANG_DEFAULT, sizeof(config.language));
-  config.gl_threaded = 1;   // offload GL submission to a second core by default
+  config.gl_threaded = 0;   // off by default -- enable per-device if you want the extra headroom
   config.gl_no_error = 1;   // skip mesa's GL call validation by default
   config.game_font = 1;     // try the in-game font for system-font labels (testing)
-  strlcpy(config.game_font_path, "/switch/ct/ChronoType.ttf", sizeof(config.game_font_path));
+  strlcpy(config.game_font_path, "/switch/ct/font/ChronoType.ttf", sizeof(config.game_font_path));
   config.game_font_scale = 0.90f; // 1.0 = auto-fit cap height to the shared font
   config.game_font_xscale = 1.0f; // 1.0 = no horizontal squeeze
   config.text_shadow = 1;         // crisp CT-style drop shadow on system-font labels
@@ -106,12 +117,16 @@ static void set_defaults(void) {
   config.native_controller = 1;    // native controller input -> Switch-button prompts
   config.controller_glyphs = 1;    // force <BTN_*> dialogue tags to the pad glyph set
   config.fix_diagonal_movement = 1; // smooth diagonal movement (matches cardinal speed)
+  config.right_stick_mirror = 1;    // right stick emulates the left stick (movement)
   config.fixed_timestep = 1;        // constant 1/60 dt -> removes dt-jitter drift (anim/audio sync)
-  config.design_resolution_fix = 1;   // stamp the whole design-resolution aspect table (640x360, both modes)
+  config.ui_scale_fix = 1;            // stamp the whole design-resolution aspect table (640x360, both modes)
   config.force_nearest = 1;           // enforce NEAREST on every texture at the GL wrapper: kills the bilinear upscale proven by the framebuffer screenshot
   config.game_area_width_fix = 1;     // adaptive ctr::gameArea width (UI-layer consumers); no-op at stock 568 design
-  config.field_pixel_perfect = 1;     // square+integer field pixels (320x180 view); boot-time patch, relaunch to change
-  config.field_zoom = 2.0f;           // 4x4 handheld / 6x6 art-px (original field_pixel_perfect framing); lower = more map visible
+  config.field_zoom_fix = 1;          // square+integer field pixels (320x180 view); boot-time patch, relaunch to change
+  config.field_zoom = 2.0f;           // 4x4 handheld / 6x6 art-px (original field_zoom_fix framing); lower = more map visible
+  config.map_zoom_fix = 1;            // on by default
+  config.map_zoom = 2.0f;             // 4x4 handheld / 6x6 art-px, matching field_zoom_fix's framing, once enabled
+  config.map_zoom_y_trim = 12.0f;     // dev-only fine-trim; hidden from write_config, see config.h
   strlcpy(config.mods_dir, "mods", sizeof(config.mods_dir)); // .ctp mod packs folder
 }
 

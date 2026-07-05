@@ -298,6 +298,14 @@ static const PatchEntry g_bilinear_patches[] = {
 //             construction untouched, visibility-only -- see Fix 6's own
 //             comment below for the full derivation, including why the
 //             first (reverted) attempt crashed
+//     Fix 7: cSfcWork::SetDefaultConfig (+ its two InitNewGameData /
+//             InitNewGamePlusData siblings, all three inline the same
+//             CONFIG_WORK constant) -- CONFIG_WORK.Movement assumed-default
+//             RUN(0) -> WALK(1). Data-only, one rodata word. Does NOT touch
+//             FieldImpl::atel_isDash's Walk(1)/Run(2) branches, so an
+//             explicit user choice in the Settings menu is still honored
+//             exactly as before -- see Fix 7's own comment below for the
+//             full derivation
 // ---------------------------------------------------------------------------
 
 // Fix 4 targets: both overloads of nsMenu::StatusBar::init are exported in
@@ -629,6 +637,69 @@ static const PatchEntry g_mobile_ui_patches[] = {
   P_SYM(VPAD_OPENVPAD_SYM, 0x4C, 0x52800021, 0x2A1F03E1,
     "VirtualPad::openVPad +0x4C bool arg=false: cursor/passcode button "
     "container (this+0x368) stays hidden"),
+
+  // -------------------------------------------------------------------------
+  // Fix 7: cSfcWork CONFIG_WORK constant -- Movement assumed-default
+  //         RUN(0) -> WALK(1)
+  //
+  //     In-game text (FLD_CMES0_217/218) confirms a Settings > Movement
+  //     option with two explicit states, Walk and Run, plus <BTN_DASH>
+  //     always doing the opposite of whichever is selected. The runtime
+  //     read of that field is FieldImpl::atel_isDash (0x58f398): it loads
+  //     CONFIG_WORK.Movement from the emulated-WRAM mirror at
+  //     [FieldImpl+72 (ChronoCanvas*), +0x14000, +564] and branches
+  //     0=Run, 1=Walk, 2=(alt table, also Run-family) -- see the cmp/b.eq
+  //     chain against #0x2/#0x1 right after the load. Nothing in that
+  //     branch chain is touched by this fix; explicit 1 (Walk) and 2 (Run)
+  //     selections resolve exactly as before.
+  //
+  //     The 0 case is what this fix changes -- but 0 is never *written* by
+  //     any Settings-menu code path (MenuNodeConfig::changeRowValue only
+  //     ever stores clamped 1/2-style indices back through the row's
+  //     setter callback). It is the field's pre-user-input assumed value,
+  //     coming from a 16-byte SIMD constant {1,1,0,0} at rodata 0x374b30
+  //     that all three of cSfcWork::SetDefaultConfig (0x55c00c),
+  //     ::InitNewGameData (0x55bca4), and ::InitNewGamePlusData (0x55c584)
+  //     load via `ldr q0,[x8,#2864]` and store into CONFIG_WORK+52..67 --
+  //     confirmed identical at all three sites via cross-reference. Word
+  //     index 3 of that constant (byte offset 0x374b3c, CONFIG_WORK+64)
+  //     lands on the exact same struct field atel_isDash reads (verified
+  //     via the FieldImpl/ChronoCanvas offset chain and the GAME_DATA
+  //     copy-constructor's memberwise-copy touching the same 564/568
+  //     pair). Patching this single rodata word changes the pre-user-input
+  //     default at all three call sites simultaneously; no code path,
+  //     branch, or the Settings-menu UI logic is modified.
+  //
+  //     Word index 1 of the same constant (byte offset 0x374b34) is a
+  //     verified non-zero neighbor (message-speed default, value 1) --
+  //     used below as a same-value sanity check. apply_patch() only ever
+  //     warns when cur != new_word AND old_word is non-zero, so an
+  //     old==new==1 entry stays silent for as long as the constant blob
+  //     hasn't shifted, and flags a MISMATCH (without writing anything) if
+  //     a future rebuild moves this rodata layout -- a real verification
+  //     gate, unlike old=0 on the actual target word below, which P_RAW's
+  //     "don't verify" sentinel can't distinguish from an unchecked cave
+  //     slot. This word is genuinely, verifiedly zero in this build; 0 is
+  //     the correct old-value to write here, just not one this framework
+  //     can double-check on its own.
+  // -------------------------------------------------------------------------
+
+  // Sanity check only (no-op while layout is unchanged): rodata 0x374b34,
+  // neighboring word in the same CONFIG_WORK-defaults constant, expected
+  // to remain 1. If a rebuild ever shifts this blob, this fires a
+  // MISMATCH in the debug log for the entry below instead of silently
+  // writing to the wrong address.
+  P_RAW(0x374b34, 0x00000001, 0x00000001,
+    "sanity check: cSfcWork CONFIG_WORK-defaults constant neighbor word "
+    "unchanged (verifies rodata layout before the Movement-default patch)"),
+
+  // The actual fix: rodata 0x374b3c, CONFIG_WORK.Movement assumed-default
+  // word, RUN(0) -> WALK(1). old=0 is a verified real value here (see
+  // derivation above), not an unchecked cave slot.
+  P_RAW(0x374b3c, 0x00000000, 0x00000001,
+    "cSfcWork CONFIG_WORK.Movement assumed-default RUN(0)->WALK(1); "
+    "explicit user Walk/Run choice in Settings still respected by "
+    "FieldImpl::atel_isDash"),
 };
 
 // ---------------------------------------------------------------------------
@@ -900,7 +971,7 @@ static const PatchEntry g_fixed_timestep_patches[] = {
 };
 
 // ---------------------------------------------------------------------------
-// 7.  design_resolution_fix
+// 7.  ui_scale_fix
 //
 //     ROOT CAUSE of the motion shimmer / "scooting" / thinning-eyes artifact
 //     (confirmed via scale_diag.log, not guessed): AppDelegate::
@@ -963,7 +1034,7 @@ static uint32_t movz_topf(int rd, float v) {
   return 0x52A00000u | ((x.u >> 16) << 5) | (uint32_t)rd;
 }
 
-static void apply_design_resolution(so_module *mod, float w, float h) {
+static void apply_ui_scale_fix(so_module *mod, float w, float h) {
   static const struct { uint32_t va; int rd; float oldv; int is_h; } sites[] = {
     { 0x641c34, 8,  568.0f, 0 },  // 16:9 entry, width
     { 0x641c38, 9,  320.0f, 1 },  // 16:9 entry, height
@@ -1005,7 +1076,7 @@ static void apply_design_resolution(so_module *mod, float w, float h) {
 //
 //     568 is the iPhone-5 design width the port was authored against. With
 //     the stock 568x320 design this rect exactly equals the visible area, so
-//     the mismatch is invisible on Android. With design_resolution_fix
+//     the mismatch is invisible on Android. With ui_scale_fix
 //     widening the design to 640x360, the game keeps laying the world out
 //     568 wide and fills the 640-wide screen with it: a 640/568 = 1.1268
 //     horizontal-only stretch. Vertical stays clean because the height side
@@ -1048,7 +1119,7 @@ static const PatchEntry g_gamearea_patches[] = {
 };
 
 // ---------------------------------------------------------------------------
-// 9.  field_pixel_perfect
+// 9.  field_zoom_fix
 //
 //     Full-frame measurement (1280x720 screenshot, autocorrelation over the
 //     whole panel) pinned the field's art-pixel size to exactly 3.75 x
@@ -1084,7 +1155,7 @@ static const PatchEntry g_gamearea_patches[] = {
 //     FieldMap -- it's overworld tile-animation-timing math that
 //     coincidentally starts from the same 192.0f constant. It has been
 //     silently overwritten (192.0 -> 160.0, and later -> 320.0/zoom) by
-//     every build since the original fixed-value field_pixel_perfect,
+//     every build since the original fixed-value field_zoom_fix,
 //     never validated against the overworld screen specifically. Dropped
 //     from this patch set entirely; it's no longer touched, so it stays
 //     at its original stock 192.0f in all configurations.
@@ -1145,7 +1216,7 @@ static const PatchEntry g_gamearea_patches[] = {
 // holds unconditionally.
 //
 // The OTHER part -- exact integer art-pixel size with no motion shimmer --
-// depends on the outer display scale too, which design_resolution_fix pins
+// depends on the outer display scale too, which ui_scale_fix pins
 // at exactly 2x in handheld and 3x in docked (screen / 640 design width).
 // Final art-px-per-screen-px = zoom * 2 (handheld) and zoom * 3 (docked).
 // Since gcd(2,3) = 1, the only values that make BOTH of those come out as
@@ -1160,7 +1231,7 @@ static const PatchEntry g_gamearea_patches[] = {
 // a value that's merely a multiple of 1/2 (handheld) or 1/3 (docked) will
 // stay perfectly crisp in that mode alone.
 // ---------------------------------------------------------------------------
-static const PatchEntry g_field_pixel_perfect_patches[] = {
+static const PatchEntry g_field_zoom_fix_patches[] = {
   // The 3 view-density sites (FieldMap::init view-height, setScrollLimit
   // width+height) used to be hardcoded here (192->160, 256->240 -- the
   // fixed 320x180-art-px view that only matches zoom=2.0). A 4th site
@@ -1232,7 +1303,7 @@ static uint32_t stp_s_imm(int rt, int rt2, int rn, int imm_over_4) {
 //
 //   0x56d874  FieldMap::init -- the one TRUE view-size density:
 //                 viewH_art (field+0x34c) = visibleH_design * (C / 320)
-//             design_resolution_fix pins visibleH to 360; we want
+//             ui_scale_fix pins visibleH to 360; we want
 //             viewH_art = 360/zoom, so C = 320/zoom. (+0x34c is consumed by
 //             the per-frame Scroll() Y conversion "scrollY = Ycam + viewH -
 //             planeH", which therefore becomes zoom-aware automatically.)
@@ -1321,7 +1392,7 @@ static uint32_t stp_s_imm(int rt, int rt2, int rn, int imm_over_4) {
 //   treating 1.875 as the Y invariant was the second load-bearing mistake
 //   in the earlier derivations.)
 //
-// Reuses movz_topf (defined above, for apply_design_resolution) directly --
+// Reuses movz_topf (defined above, for apply_ui_scale_fix) directly --
 // same single-instruction "movz w_,#topbits(float),lsl#16" encoding these
 // sites already used for their original fixed values, so no new instruction
 // slots are needed and no adjacent code is disturbed. Computed values are
@@ -1521,7 +1592,7 @@ static uint32_t encode_b(uintptr_t from_addr, uintptr_t to_addr); // forward dec
 // the fieldmap NODE's own screen position pivots around design-canvas center
 // (320,180) at any zoom, instead of the stale flat (ctr::x_offset, 0.0) pair
 // (a leftover multi-device-width formula that only ever evaluates to a fixed
-// +80/+0 offset once design_resolution_fix pins the canvas to 640x360 --
+// +80/+0 offset once ui_scale_fix pins the canvas to 640x360 --
 // blind to zoom entirely).
 //
 // This uses the exact same local reference point, (128,96), that
@@ -2152,7 +2223,7 @@ static void scroll_dbg_drain(void) {
 //      matching all five logs bit-for-bit.
 //
 // THE FIX: keep the character at the STOCK screen registration (what you see
-// with field_pixel_perfect off) at every zoom, by making the entry gap
+// with field_zoom_fix off) at every zoom, by making the entry gap
 // zoom-aware:  gap = 210/zoom art px  (== 112 at 1.875, no-op by identity).
 // Split into chips + sub-chip residual:  8*N - f = 210/zoom,  f in [0,7]:
 //
@@ -2256,24 +2327,432 @@ static void apply_field_engine_registration_y(so_module *mod, float zoom) {
 }
 
 // ---------------------------------------------------------------------------
-// The identical hard-coded (1.875, 1.66667) setScale(x,y) pattern also
-// appears, unpatched, at these WorldMap sites -- the overworld map screen
-// almost certainly has the exact same non-square art-pixel issue as the
-// field screens, via the same idiom (immediate-encoded fmov pair feeding
-// vtable slot 0x90). NOT enabled by default -- field_pixel_perfect was
-// scoped to the field only. Fold into g_field_pixel_perfect_patches (same
-// nop+fmov replacement shape as above, at these addresses) if/when the
-// overworld map is measured and confirmed to have the same 9/8 stretch:
-//   WorldMap::Init2          0x607c98 / 0x607c9c   (first  fieldmap-alike node)
-//   WorldMap::Init2          0x607db4 / 0x607db8   (second fieldmap-alike node)
-//   WorldMap::initWeatherMap 0x60840c / 0x608424
-//   WorldMap::exitMiniMap    0x609c28 / 0x609c2c
-// Deliberately NOT touching the other three occurrences found by the same
-// scan (BattleMenu::Proc 0x5b143c/0x5b15ec, AgeSelectScene::init 0x744264/
-// 0x744268, SpecialEventScene::init 0x777ed0/0x777ed4) -- no evidence yet
-// they're the same "low-res canvas stretched to fill the screen" idiom
-// rather than an unrelated coincidental reuse of the same ratio; patching
-// those blind risks warping unrelated UI/background art.
+// map_zoom_fix / map_zoom -- WorldMap (overworld) counterpart to
+// field_zoom_fix / field_zoom.
+//
+// The identical hard-coded (1.875, 1.66667) setScale(x,y) pattern found in
+// FieldMap::makeField also appears, via the same idiom (immediate-encoded
+// fmov pair feeding vtable slot 0x90 -- Node::setScale), at four WorldMap
+// sites -- confirmed by disassembling the actual shipped libchrono.so
+// (aarch64-linux-gnu-objdump, cross-checked with a whole-binary scan for the
+// `fmov s0,#1.875` immediate encoding, 0x1e2fd000 -- 7 hits total: one is
+// FieldMap::makeField itself, already owned by apply_field_zoom above; two
+// (AgeSelectScene::init 0x744264, SpecialEventScene::init 0x777ed0) are left
+// alone, same as the file's existing policy for BattleMenu::Proc -- no
+// evidence they're the same "map node" idiom rather than a coincidental
+// reuse of the same ratio elsewhere; the remaining four are exactly the
+// WorldMap sites below, and nothing else):
+//
+//   WorldMap::Init2          0x607c98   (first  fieldmap-alike node)
+//   WorldMap::Init2          0x607db4   (second fieldmap-alike node)
+//   WorldMap::exitMiniMap    0x609c28
+//   WorldMap::initWeatherMap 0x60840c   (special -- see below)
+//
+// Each of the first three sites disassembles to the exact same 4-instruction
+// idiom (BASE = the fmov-s0 address; verified byte-identical old words at
+// all three):
+//   BASE-8  movz w9, #0x5555             start building 1.66667 into w9
+//   BASE-4  (unrelated -- a pointer load or "mov x0,x<n>" the surrounding
+//            setScale call needs; scheduled into the gap by the compiler)
+//   BASE    fmov s0, #1.875              single-instruction FP immediate
+//   BASE+4  movk w9, #0x3fd5, lsl #16    finish building 1.66667 into w9
+//   ...     fmov s1, w9                  elsewhere close by -- NOT patched,
+//                                        see below for why it doesn't need
+//                                        to be
+//
+// This is the SAME shape apply_field_zoom patches above -- except there the
+// four instructions are contiguous (0x5761fc-0x576210), so w9 is fully built
+// by the time BOTH fmov s0,w9 and fmov s1,w9 read it, and a full-precision
+// movz+movk works. Here, s0's read (BASE) falls BETWEEN the two halves of
+// the w9 build (BASE-8 and BASE+4), so at that point w9 only has its low 16
+// bits set -- there is no instant where w9 is both complete and unread by
+// s0. Building a second, independent value in another register would need
+// two more instructions we don't have room for without a branch to a cave,
+// which is more machinery than this warrants.
+//
+// Fix: build the FULL value in front of s0's read using the same one-
+// instruction, top-16-bits-only encoding apply_field_view_zoom already uses
+// for exactly this kind of squeeze (movz_topf: 7 mantissa bits -- exact for
+// whole and most half/quarter-step zoom values, and nowhere near enough
+// error at any value to be visible on a handful of screen pixels). That
+// frees the movk slot entirely: with w9 already final one instruction
+// earlier, the old movk would only serve to stomp its upper 16 bits back to
+// the hardcoded 0x3fd5 (1.66667) before fmov s1 reads it, so it's nopped.
+// fmov s1,w9 is left completely untouched at every site -- it already reads
+// w9 by register, so it picks up the new value the instant its producer
+// changes, with no need to know or touch its own address.
+//
+// The fourth site, WorldMap::initWeatherMap, uses the same building blocks
+// but s0 isn't a single hardcoded constant there -- it's one of TWO values,
+// chosen by an fcsel gated on w20==1 (disassembly, addresses absolute):
+//   0x608404  mov   w8, #0x40160000        2.34375f -- already a
+//                                           movz_topf-style single
+//                                           instruction in stock (top16 of
+//                                           2.34375f is exactly zero-padded)
+//   0x608408  ldr   x9, [x23]              unrelated, untouched
+//   0x60840c  fmov  s0, #1.875             default candidate
+//   0x608410  fmov  s1, w8                 unrelated *yet* -- temp holds the
+//                                          2.34375 candidate for fcsel below
+//   0x608414  cmp   w20, #1                untouched
+//   0x608418  mov   x0, x23                untouched
+//   0x60841c  ldr   x8, [x9, #144]         untouched -- vtable slot fetch
+//   0x608420  movz  w9, #0x5555            start building 1.66667
+//   0x608424  movk  w9, #0x3fd5, lsl #16   finish building 1.66667
+//   0x608428  fcsel s0, s1, s0, eq         s0 = (w20==1) ? 2.34375 : 1.875
+//   0x60842c  fmov  s1, w9                 s1 = 1.66667, unconditionally
+//   0x608430  blr   x8                     call setScale(this, s0, s1)
+// 2.34375 / 1.875 = 1.25 exactly -- whatever this alternate state actually
+// is (a weather overlay, most likely, given the function name; the gating
+// condition itself wasn't decoded and isn't needed to be), it scales the
+// map 25% larger on X only, with Y unaffected. That ratio is preserved
+// rather than discarded: the default candidate becomes zoom, the alternate
+// becomes zoom*1.25, and Y becomes zoom -- matching the three simple sites.
+// The same one-instruction w9 build frees a slot here too, but instead of
+// nopping it, that slot becomes a live "fmov s0,w9" landing immediately
+// before fcsel reads s0 as its false-case operand -- valid because nothing
+// else reads or writes s0 between the old fmov-s0 site and fcsel (verified:
+// the intervening writes are to s1 and w9 only). fcsel and the trailing
+// fmov s1,w9 are both untouched; each already reads a register, so both
+// pick up the new contents automatically.
+//
+// Every old_word below was read directly out of this build's libchrono.so
+// with aarch64-linux-gnu-objdump before writing any of this, the same way
+// every other patch in this file is verified -- apply_patch's own
+// mismatch check (see top of file) is the second, independent safety net:
+// a build with different bytes at these addresses skips each entry and
+// logs a warning instead of writing anything.
+//
+// STILL-OPEN, same spirit as field_zoom's own documented caveats: this
+// patch touches ONLY the four setScale immediates above -- no position,
+// anchor, or camera/scroll code, on WorldMap or anywhere else, is read or
+// written by it. That means it cannot itself shift, mis-center, or misalign
+// the map; the only thing map_zoom changes is how big the map is drawn
+// (uniformly -- X and Y are always set equal), which changes how much of it
+// fits in whatever fixed-size container/RenderTexture WorldMap composites
+// into. That container's size has NOT been located or hardware-verified the
+// way FieldMap's 432x224 RenderTexture floor was (see field_zoom's own
+// comment above) -- so while the default (2.0, matching field_pixel_
+// perfect's own original framing) is expected to be safe, values far from
+// it are unverified and could reveal a similar floor/ceiling. Test on real
+// hardware before shipping a non-default value.
+// ---------------------------------------------------------------------------
+static void apply_map_zoom(so_module *mod, float zoom) {
+  if (zoom < 0.05f) zoom = 0.05f;  // guard: div-by-zero / degenerate scale
+
+  // Round to nearest top-16 float before handing to movz_topf -- same
+  // rounding apply_field_view_zoom uses for its own runtime-computed
+  // values (movz_topf itself just truncates, which is fine for the fixed,
+  // already-top16-exact literals it was originally written for, but zoom
+  // is arbitrary user input here).
+  #define RN16(f) ({ union { float _f; uint32_t _u; } _x; _x._f = (f); \
+                     _x._u = (_x._u + 0x8000u) & 0xFFFF0000u; _x._f; })
+  const float zoom_rn   = RN16(zoom);
+  const float zoom_alt  = RN16(zoom * 1.25f);  // initWeatherMap's alt candidate
+  #undef RN16
+
+  const uint32_t movz9      = movz_topf(9, zoom_rn);
+  const uint32_t fmov_s0_w9 = fmov_s_from_w(0, 9);
+  const uint32_t NOP        = 0xd503201f;
+
+  // -- The three simple sites --
+  static const uint32_t SIMPLE_BASES[3] = {
+    0x607c98,   // WorldMap::Init2, first fieldmap-alike node
+    0x607db4,   // WorldMap::Init2, second fieldmap-alike node
+    0x609c28,   // WorldMap::exitMiniMap
+  };
+  for (int i = 0; i < 3; i++) {
+    const uint32_t base = SIMPLE_BASES[i];
+    const PatchEntry e[3] = {
+      { NULL, 0, base - 8, 0x528aaaa9, movz9,
+        "WorldMap setScale: movz w9,#0x5555 -> movz w9,#topbits(zoom)" },
+      { NULL, 0, base,     0x1e2fd000, fmov_s0_w9,
+        "WorldMap setScale: fmov s0,#1.875 -> fmov s0,w9" },
+      { NULL, 0, base + 4, 0x72a7faa9, NOP,
+        "WorldMap setScale: movk w9,#0x3fd5,lsl#16 -> nop (w9 already final)" },
+    };
+    apply_patches(mod, e, 3);
+  }
+
+  // -- WorldMap::initWeatherMap (conditional X candidate) --
+  {
+    const uint32_t movz8_alt = movz_topf(8, zoom_alt);
+    const PatchEntry e[4] = {
+      { NULL, 0, 0x608404, 0x52a802c8, movz8_alt,
+        "initWeatherMap: mov w8,#2.34375f -> mov w8,#topbits(zoom*1.25)" },
+      { NULL, 0, 0x60840c, 0x1e2fd000, NOP,
+        "initWeatherMap: fmov s0,#1.875 -> nop (dead write, replaced below)" },
+      { NULL, 0, 0x608420, 0x528aaaa9, movz9,
+        "initWeatherMap: movz w9,#0x5555 -> movz w9,#topbits(zoom)" },
+      { NULL, 0, 0x608424, 0x72a7faa9, fmov_s0_w9,
+        "initWeatherMap: movk w9,#0x3fd5,lsl#16 -> fmov s0,w9 (fcsel operand)" },
+    };
+    apply_patches(mod, e, 4);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// apply_map_node_anchor -- the field_node_anchor counterpart for WorldMap.
+// This is the piece config.h's map_zoom_fix comment and apply_map_zoom's
+// own header both flag as missing ("does NOT come with a companion view-
+// size/scroll-limit correction... cannot shift or mis-center the map [on its
+// own]"). It closes that gap for the specific bug being reported: off-center
+// framing at non-stock map_zoom values, the exact same symptom field_zoom
+// had before apply_field_node_anchor existed.
+//
+// DISASSEMBLY (this build's libchrono.so, aarch64-linux-gnu-objdump,
+// verified byte-for-byte via direct file read before writing any of this --
+// same standard as every other patch here):
+//
+// WorldMap::Init2 contains the setScale call apply_map_zoom already patches
+// at 0x607c98 ("first fieldmap-alike node"), immediately followed by its
+// setPosition call at 0x607ce4 (vtable slot +200 -- the SAME setPosition
+// slot FieldMap::makeField calls). Stock computes the two args as:
+//
+//   x9  = adrp/ldr &ctr::x_offset (0xbc6000+3240)   -- IDENTICAL global,
+//         identical adrp+ldr idiom, to the one apply_field_node_anchor's
+//         header already documents for FieldMap::makeField. Not a
+//         coincidence: it's the same "half of a 480-wide art window,
+//         centered in the current design width" helper value, reused here.
+//   s0  (x-arg) = *x9                     = ctr::x_offset (80.0 under our
+//                                            fixed 640-wide design canvas)
+//   s1  (y-arg) = getVisibleSize().height + (-320.0)
+//                                          = visibleH - 320.0 (40.0 under
+//                                            our fixed 640x360 canvas, via
+//                                            Director::getInstance()->
+//                                            getVisibleSize(), confirmed by
+//                                            resolving the two BL targets
+//                                            against .rela.dyn: 0xb3f9c0 ->
+//                                            cocos2d::Director::getInstance,
+//                                            0xb3f9d0 -> ::getVisibleSize)
+//
+// Both args are blind to zoom, exactly like FieldMap's old (ctr::x_offset,
+// 0.0) pair -- and for the same reason: this code predates map_zoom
+// entirely, so nothing here was ever meant to track it. As zoom moves off
+// the stock 1.875/1.66667 pair apply_map_zoom now lets you pick, the node
+// grows/shrinks around this fixed anchor instead of around the design-
+// canvas center, producing the reported off-center framing (worse the
+// further zoom sits from stock, same shape of bug as field_zoom's original
+// one).
+//
+// X FIX -- high confidence, not a new derivation: this is bit-for-bit the
+// same mechanism apply_field_node_anchor already proved out (same global,
+// same vtable slot, same "half art-window centered in design width" shape),
+// so it gets the same formula:
+//     node_x = 320.0 - 128.0*zoom
+// (320 = half of the 640-wide design canvas from ui_scale_fix; 128
+// = half of the shared engine's 256-art-px window -- see
+// apply_field_node_anchor's header for the derivation of both constants.)
+// At zoom=1.875 this reduces to exactly 80.0, bit-identical to stock
+// ctr::x_offset under our fixed canvas -- no behavior change at the
+// reference zoom, same identity guarantee every other zoom patch in this
+// file gives.
+//
+// Y FIX -- ROUND 2 (superseding the round-1 top-anchor formula below).
+// Round 1 deliberately rejected the naive "mirror the X formula" guess
+// (180.0 - 96.0*zoom) because it doesn't reproduce the disassembled stock
+// constant (40.0 at zoom=1.66667; the naive formula gives 20.0). That's
+// correct as far as it goes -- solving backwards from the disassembled
+// (visibleH - 320.0) formula does confirm stock anchors the map's TOP edge
+// to the top of the design canvas and leaves the leftover 40.0-unit margin
+// at the BOTTOM, not centered -- but round 1 stopped at "reproduce stock
+// bit-for-bit" without asking whether stock's own framing is still the
+// right TARGET once the rest of this mod has already changed the picture.
+// It isn't, for two independent reasons, both confirmed against this
+// exact config:
+//
+//   1. The bottom margin exists in stock ONLY to leave room for the
+//      WorldMap MENU/MAP/WARP button row -- config.remove_mobile_ui (on by
+//      default, and on in the reported config) already hides that row.
+//      Preserving stock's reserved space for a UI element that's no longer
+//      drawn just relocates dead space, it doesn't serve stock's original
+//      purpose.
+//   2. The top-anchor formula only reproduces that (now-pointless) framing
+//      AT the single reference zoom (1.66667). Away from it -- including
+//      at this config's own map_zoom=2.0 -- the content's own vertical
+//      midpoint drifts: node_y + content_height/2 = (360-192*zoom) +
+//      96*zoom = 360 - 96*zoom, which is 200 at zoom=1.66667 (already
+//      20 above true center, i.e. never centered to begin with) but only
+//      168 at zoom=2.0 -- 12 design-px BELOW the screen's true vertical
+//      center (180), worse at higher zoom (72 at zoom=3.0, i.e. 108 low).
+//      That's this bug: linear in zoom, and lines up exactly with "the
+//      character sits a bit lower than center" reported at map_zoom=2.0.
+//
+// Fix: target the design canvas's actual vertical center instead of
+// stock's UI-reserving offset -- back to the "obvious" mirror-of-X formula
+// round 1 rejected, but now as the deliberate target rather than a
+// rejected first draft:
+//     node_y = 180.0 - 96.0*zoom
+// (180 = half of the 640x360 design canvas; 96 = half of the shared
+// engine's 192-art-px window, same source as X's 128 = half of 256.) This
+// is an EXACT identity at every zoom, not just one reference value:
+// node_y + content_height/2 = (180 - 96*zoom) + 96*zoom = 180, always --
+// the content's own vertical midpoint sits at the design canvas's true
+// center (180) regardless of zoom, by construction, the same guarantee
+// the X formula already gives on its axis. (At zoom=1.66667 this now
+// reads 20.0, not stock's 40.0 -- a deliberate, understood departure from
+// stock, not a mistake: see point 1 above for why stock's own value is no
+// longer the right target under this mod's own config.)
+//
+// Confidence note: same as round 1's, this is algebra, not a real-hardware
+// result, and this project's history (apply_field_node_anchor's five-round
+// Y saga) is a standing reminder that "the algebra checks out" and "it
+// looks right on real hardware" are different claims. What round 2 adds
+// over round 1 is a reason to believe it fixes the SPECIFIC reported
+// symptom (low character at map_zoom=2.0, magnitude matches the -12
+// computed here) rather than only an identity check at a zoom nothing here
+// actually runs at. Still watch for the field_zoom failure signature (a
+// solid-color or stale-content bar at the map's top or bottom edge) at
+// zoom extremes (try 1.0 and 3.0 specifically) in case WorldMap has a
+// render-target coupling like FieldMap's that disassembly alone doesn't
+// surface -- the total blank area at any given zoom is unchanged from
+// round 1 (still 360-192*zoom design-px of it when that's positive), only
+// its top/bottom split moves from all-bottom to half-and-half, which is a
+// smaller structural change than field_zoom's node-shift attempts made
+// (those changed how much was shifted, not just where an existing gap
+// sat) -- but it is still a change, not a no-op, so it isn't assumed safe.
+// If a bar or corruption shows up, delete the y-arg patches below (keep
+// the x-arg ones -- independent) and fall back to round 1's node_y =
+// 360.0 - 192.0*zoom pending more data, same escalation path field used.
+//
+// NOT touched, and why: WorldMap::Init2's SECOND "fieldmap-alike" node
+// (setScale at 0x607db4, already patched by apply_map_zoom) has its own
+// setPosition call immediately after, but disassembly shows it does NOT
+// share this node's formula at all -- x-arg is a flat compiled-in 328.0
+// (no ctr::x_offset reference whatsoever), y-arg is (visibleH - 320.0) *
+// 0.5, i.e. HALF of this node's y-shift. Different constants on both axes
+// means this is very likely a structurally different layer (a border,
+// shadow, or overlay plane at its own scale/position convention, not a
+// second copy of the main map) -- guessing a formula for it from the outer
+// shape alone, without knowing what it actually draws, is exactly the kind
+// of blind patch this file's own history (see apply_field_camera_centering
+// and the five-round apply_field_node_anchor saga) warns against. Left
+// alone pending a screenshot/log-driven investigation of what that layer
+// actually is, same standard as every other "not yet located" gap in this
+// file. WorldMap::exitMiniMap (0x609c28) and WorldMap::initWeatherMap
+// (0x60840c), the other two apply_map_zoom sites, were also checked end to
+// end: neither is followed by ANY setPosition call on the scaled node (both
+// fall straight into unrelated setVisible/cleanup code), so whatever
+// position those nodes have was already set once elsewhere and isn't
+// reset here -- nothing for this function to patch at either site.
+//
+// Mechanics: the same 10 instruction words between the setScale call and
+// setPosition's blr (0x607cbc-0x607ce0) that stock uses to load ctr::
+// x_offset and compute visibleH-320.0 are reused in place -- no cave, no
+// branch, unlike apply_field_node_anchor (which only had 2 free slots and
+// needed one). Here there are 7 free slots after removing the old x/y
+// computation, room enough for the whole new computation (movz_topf +
+// fmov, per axis, 4 instructions total) with 3 left over, NOPed. The 3
+// instructions that resolve the vtable's setPosition slot and set x0=this
+// (0x607cd0/0x607cd4/0x607cd8) are left completely untouched in their
+// original positions -- verified not to depend on anything the removed
+// instructions computed.
+//
+// ROUND 3 -- why round 2 alone still reads "a tad lower than center" on
+// real hardware, and what config.map_zoom_y_trim is for.
+//
+// Round 2 is still correct as far as it goes: it is an exact identity for
+// wherever the WHOLE composited WorldMap node ends up. But this session's
+// disassembly (fresh read of this exact libchrono.so, not carried over
+// from any earlier summary) found that the party-leader sprite is NOT
+// positioned by this node at all -- it's positioned INSIDE a separate
+// render target this node only displays after the fact, and that inner
+// stage has its own, independent coordinate system:
+//
+//   - WorldObjectManager::Draw1/Draw2 (called from WorldImpl::drawWorld,
+//     0x612060/0x61201c/0x6120cc) render every WorldObject sprite via a
+//     direct cocos2d::Node::visit() call -- NOT via addChild, so these
+//     sprites are never parented under the node apply_map_node_anchor
+//     repositions. Draw1/Draw2 are always called between a matched
+//     RenderTexture begin()/end() pair (vtable +0x530/+0x548) -- confirmed
+//     by full disassembly of drawWorld -- so the sprites are baked into
+//     that RT's own pixel buffer, at whatever coordinates they're given,
+//     before the RT is ever composited onto the node this patch moves.
+//   - That RT is NOT the four 512x512 tile-cache textures apply_map_zoom's
+//     own header already accounted for. WorldMap::Init2 creates two
+//     further RenderTextures at 0x220 x 0x100 (544x256 px, verified via
+//     RenderTexture::create(w,h)'s own w0/w1 args immediately before each
+//     call), stored at this+0x930 and this+0x938 -- the SAME two offsets
+//     drawWorld's begin()/end() pair reads back every frame. This 544x256
+//     size does not match either art-window constant (192 or 256) used
+//     anywhere else in this file, so no existing formula in this file
+//     already accounts for it.
+//   - WorldObject::setPos (0x63ef8c, disassembled fresh this session)
+//     computes the sprite's position inside that RT as a flat, zoom-blind
+//     (x_arg + 192, 224 - y_arg) -- traced back through DrawSpriteAll
+//     (0x63be84) to a per-object table at this+0x22d0 that the underlying
+//     SNES-engine port (PutShape/HariCt/PartyMember, etc.) fills every
+//     frame in native SNES OAM units. 224 is the SNES's own native active
+//     picture height -- NOT the 192-art-px window apply_map_node_anchor's
+//     own X/Y formulas are built from -- so there is no guarantee, and no
+//     easy proof either way from static analysis alone, that this inner
+//     224-tall (or 544x256-RT-tall) coordinate space's own effective
+//     center lines up with the 192-tall reference the outer node math
+//     targets. A mismatch of exactly this shape (an engine-internal
+//     registration constant that doesn't match the render-side art window)
+//     is the EXACT failure mode field_zoom's own multi-round Y saga above
+//     turned out to be, right down to the "close, but a bit low, at every
+//     zoom" symptom -- see apply_field_engine_registration_y's header for
+//     the field-side version of this same class of bug.
+//
+// Fully closing this the way field_zoom eventually did (apply_field_
+// engine_registration_y) needs either (a) tracing GetPartyCharPos/
+// PutShape/HariCt's full OAM-table fill logic to get the party leader's
+// exact native Y value on entry -- a large amount of additional SNES-
+// engine-emulation disassembly with no guarantee of a clean answer, or
+// (b) a hardware debug-log capture of that value directly (same tool this
+// file already used for field_zoom -- see apply_field_scroll_debug_log
+// above for the pattern). Neither is done yet.
+//
+// Until then, config.map_zoom_y_trim is the safe, immediate lever: a
+// plain design-px additive term on top of round 2's node_y, defaulting to
+// 0.0 (byte-identical to round 2 -- nothing changes until it's set). It
+// rides the SAME already-X-proven node-position patch, so it cannot
+// desync the background plane from anything else the way a wrong engine-
+// level patch could -- it just slides the whole composited node (map +
+// everything drawn into its RTs, sprites included) up or down as one
+// unit. Positive values move the node UP the screen (this node's position
+// is a bottom-left-anchor Y in cocos2d's Y-up convention, confirmed by
+// the X-axis formula's own sign), which is the direction needed for
+// today's reported symptom (character sits low -> raise it). Pick a
+// value by eye in small steps (try +/-5, then +/-10, etc. design px) and
+// rebuild; once it looks centered at your current config.map_zoom, note
+// that the underlying inner-RT bug this works around is not itself proven
+// zoom-proportional yet, so re-check by eye if you change map_zoom later.
+// ---------------------------------------------------------------------------
+static void apply_map_node_anchor(so_module *mod, float zoom) {
+  if (zoom < 0.05f) zoom = 0.05f;  // guard: div-by-zero / degenerate anchor
+
+  const float node_x = 320.0f - 128.0f * zoom;  // see header: high confidence
+  const float node_y = 180.0f - 96.0f * zoom + config.map_zoom_y_trim;   // round 2 identity + round-3 empirical trim, see header
+
+  const uint32_t movz_x = movz_topf(9, node_x);
+  const uint32_t fmov_x = fmov_s_from_w(0, 9);
+  const uint32_t movz_y = movz_topf(10, node_y);
+  const uint32_t fmov_y = fmov_s_from_w(1, 10);
+  const uint32_t NOP    = 0xd503201f;
+
+  const PatchEntry e[7] = {
+    { NULL, 0, 0x607cbc, 0x52b87408, movz_x,
+      "WorldMap::Init2 map node setPosition: mov w8,#-320.0 -> movz w9,#topbits(node_x)" },
+    { NULL, 0, 0x607cc0, 0xbd409fe0, fmov_x,
+      "WorldMap::Init2 map node setPosition: ldr s0,[sp,#156] (visH) -> fmov s0,w9 (node_x)" },
+    { NULL, 0, 0x607cc4, 0xf0002de9, movz_y,
+      "WorldMap::Init2 map node setPosition: adrp x9,&ctr::x_offset -> movz w10,#topbits(node_y)" },
+    { NULL, 0, 0x607cc8, 0x1e270101, fmov_y,
+      "WorldMap::Init2 map node setPosition: fmov s1,w8(-320.0) -> fmov s1,w10 (node_y)" },
+    { NULL, 0, 0x607ccc, 0xf9465529, NOP,
+      "WorldMap::Init2 map node setPosition: ldr x9,[x9,#3240] (ctr::x_offset) -> nop" },
+    { NULL, 0, 0x607cdc, 0x1e212801, NOP,
+      "WorldMap::Init2 map node setPosition: fadd s1,s0,s1 (visH-320) -> nop" },
+    { NULL, 0, 0x607ce0, 0xbd400120, NOP,
+      "WorldMap::Init2 map node setPosition: ldr s0,[x9] (ctr::x_offset value) -> nop" },
+    // 0x607cd0 ldr x8,[x22]     (vtable ptr)      -- UNCHANGED
+    // 0x607cd4 mov x0,x22       (this)            -- UNCHANGED
+    // 0x607cd8 ldr x8,[x8,#200] (setPosition slot) -- UNCHANGED
+    // 0x607ce4 blr x8                              -- UNCHANGED
+  };
+  apply_patches(mod, e, 7);
+}
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -2383,9 +2862,9 @@ static inline void apply_game_patches(so_module *mod) {
     apply_patches(mod, g_fixed_timestep_patches, PATCH_COUNT(g_fixed_timestep_patches));
   }
 
-  if (config.field_pixel_perfect) {
-    debugPrintf("patches: applying field_pixel_perfect (zoom=%g)\n", config.field_zoom);
-    apply_patches(mod, g_field_pixel_perfect_patches, PATCH_COUNT(g_field_pixel_perfect_patches));
+  if (config.field_zoom_fix) {
+    debugPrintf("patches: applying field_zoom_fix (zoom=%g)\n", config.field_zoom);
+    apply_patches(mod, g_field_zoom_fix_patches, PATCH_COUNT(g_field_zoom_fix_patches));
     // View/FOV size FIRST, blit scale second -- order doesn't matter functionally
     // (different instruction sites) but this reads in the order data flows:
     // decide how much map is captured, then how big that capture is drawn.
@@ -2461,18 +2940,30 @@ static inline void apply_game_patches(so_module *mod) {
     apply_field_scroll_debug_log(mod);
   }
 
+  if (config.map_zoom_fix) {
+    debugPrintf("patches: applying map_zoom_fix (zoom=%g)\n", config.map_zoom);
+    apply_map_zoom(mod, config.map_zoom);
+    // Closes the centering gap map_zoom's own header (and config.h's
+    // map_zoom_fix comment) documents as still-open: apply_map_zoom
+    // alone only resizes the WorldMap node, around its old zoom-blind
+    // anchor -- see apply_map_node_anchor's header for the full disassembly
+    // and for why its Y half specifically needs real-hardware confirmation
+    // before trusting it away from the default zoom.
+    apply_map_node_anchor(mod, config.map_zoom);
+  }
+
   if (config.game_area_width_fix) {
     debugPrintf("patches: applying game_area_width_fix\n");
     apply_patches(mod, g_gamearea_patches, PATCH_COUNT(g_gamearea_patches));
   }
 
-  if (config.design_resolution_fix) {
+  if (config.ui_scale_fix) {
     // 640x360 stamped across the WHOLE aspect table, both modes: 2x at 720p
     // handheld, 3x at 1080p docked -- the familiar framing. Table-wide
     // stamping keeps it stable across boot/dock/undock (the game's runtime
     // aspect picker can no longer swap entries).
     debugPrintf("patches: design resolution 640x360 (all aspect-table entries)\n");
-    apply_design_resolution(mod, 640.0f, 360.0f);
+    apply_ui_scale_fix(mod, 640.0f, 360.0f);
   }
 }
 

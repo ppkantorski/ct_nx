@@ -467,14 +467,36 @@ static void update_keys(void) {
     HidAnalogStickState l = padGetStickPos(&pad, 0);
     HidAnalogStickState r = padGetStickPos(&pad, 1);
     const float dz = 0.12f; // ~3900/32768 deadzone
-    const float axes[4] = { l.x / 32768.0f, -l.y / 32768.0f, r.x / 32768.0f, -r.y / 32768.0f };
+    float lx = l.x / 32768.0f, ly = -l.y / 32768.0f;
+    float rx = r.x / 32768.0f, ry = -r.y / 32768.0f;
+    lx = (lx > -dz && lx < dz) ? 0.0f : lx;
+    ly = (ly > -dz && ly < dz) ? 0.0f : ly;
+    rx = (rx > -dz && rx < dz) ? 0.0f : rx;
+    ry = (ry > -dz && ry < dz) ? 0.0f : ry;
+
+    // right_stick_mirror -- emulate the left joystick using the physical
+    // right stick: whatever the right stick reports gets sent to the game
+    // on the SAME channel/ids as the real left stick (CC_JOY_LX/CC_JOY_LY,
+    // 1000/1001) -- the one channel confirmed live end-to-end (this is how
+    // field movement already works). Right stick tilt takes priority over
+    // the real left stick when both are active, since it's standing in for
+    // it; with the right stick centred, the real left stick passes through
+    // untouched. The right stick's own raw position is still also sent as
+    // CC_JOY_RX/CC_JOY_RY below in case anything ever reads that separately,
+    // but that's not what makes this feature work.
+    float send_lx = lx, send_ly = ly;
+    if (config.right_stick_mirror && (rx != 0.0f || ry != 0.0f)) {
+      send_lx = rx;
+      send_ly = ry;
+    }
+
+    const float axes[4] = { send_lx, send_ly, rx, ry };
     static const int axis_key[4] = { CC_JOY_LX, CC_JOY_LY, CC_JOY_RX, CC_JOY_RY };
     static float prev_axis[4] = { 0, 0, 0, 0 };
     for (int i = 0; i < 4; i++) {
-      float v = (axes[i] > -dz && axes[i] < dz) ? 0.0f : axes[i];
-      if (v != prev_axis[i]) {
-        e_ctrlAxis(fake_env, thiz, g_ctrl_name, 0, axis_key[i], v, 1);
-        prev_axis[i] = v;
+      if (axes[i] != prev_axis[i]) {
+        e_ctrlAxis(fake_env, thiz, g_ctrl_name, 0, axis_key[i], axes[i], 1);
+        prev_axis[i] = axes[i];
       }
     }
   }
