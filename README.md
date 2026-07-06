@@ -12,6 +12,8 @@ This is a wrapper/port of the Android version of *[Chrono Trigger](https://play.
 binaries, patches them and runs them: we natively run the original Android `.so`
 files inside a minimal emulated Android environment.
 
+---
+
 ### Features
 
 * **Extensive `config.ini`** — screen resolution (independent per handheld/docked,
