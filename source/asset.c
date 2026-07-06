@@ -1,5 +1,8 @@
 /* asset.c -- AAssetManager NDK emulation over the loose Chrono Trigger assets
  *
+ * Copyright (C) 2026 NaGaa95 <https://github.com/NaGaa95>
+ * Copyright (C) 2026 ppkantorski <https://github.com/ppkantorski>
+ *
  * This software may be modified and distributed under the terms
  * of the MIT license. See the LICENSE file for details.
  */
