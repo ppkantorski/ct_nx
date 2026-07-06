@@ -77,4 +77,6 @@ in this project. We do not condone piracy in any way, shape or form and encourag
 users to legally own the original game.
 
 Unless specified otherwise, the source code provided in this repository is
-licensed under the MIT License. Please see the accompanying LICENSE file.
+licensed under the [MIT License](/LICENSE).
+
+The included font is licensed under [CC BY-NC-SA 3.0]() and is not covered by this project's license.
