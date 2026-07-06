@@ -1,5 +1,6 @@
 /* gfx.c -- system-font text rasterisation (FreeType on the Switch shared font)
  *
+ * Copyright (C) 2026 NaGaa95 <https://github.com/NaGaa95>
  * Copyright (C) 2026 ppkantorski <https://github.com/ppkantorski>
  *
  * This software may be modified and distributed under the terms
