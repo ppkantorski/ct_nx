@@ -3,6 +3,10 @@
 remove_bilinear.py  --  Force GL_NEAREST (point sampling) in Chrono Trigger NX's
 libchrono.so, removing all bilinear texture filtering.
 
+Copyright (C) 2026 ppkantorski <https://github.com/ppkantorski>
+This software may be modified and distributed under the terms of the MIT
+license. See the LICENSE file for details.
+
 The bilinear filtering is NOT in the .fsh/.vsh shader assets. It is GL texture
 state set in native code (Cocos2d-x). This tool patches two functions:
 
