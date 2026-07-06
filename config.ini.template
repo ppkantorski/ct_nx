@@ -6,7 +6,7 @@ screen_width_docked = 1920
 screen_height_docked = 1080
 
 ; --- Language ---
-language = en
+language = default
 
 ; --- Font ---
 game_font = 1
