@@ -204,8 +204,8 @@ your own `resources.bin`, and packages the result as a `.ctp` ready for your
 mods folder:
 
 ```
-python3 tools/generate_text_ctp.py /path/to/resources.bin
-python3 tools/generate_text_ctp.py /path/to/resources.bin --lang en,ja
+python3 generate_text_ctp.py /path/to/resources.bin
+python3 generate_text_ctp.py /path/to/resources.bin --lang en,ja
 ```
 
 Since it works from your own copy of the game, none of Square Enix's
