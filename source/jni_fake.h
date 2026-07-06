@@ -7,6 +7,9 @@
  * calls resolve to native C implementations, and we drive the engine's own
  * native entry points (nativeInit/nativeRender/touches/keys) directly.
  *
+ * Copyright (C) 2026 NaGaa95 <https://github.com/NaGaa95>
+ * Copyright (C) 2026 ppkantorski <https://github.com/ppkantorski>
+ *
  * This software may be modified and distributed under the terms
  * of the MIT license. See the LICENSE file for details.
  */
