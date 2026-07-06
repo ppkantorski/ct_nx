@@ -92,7 +92,8 @@ It's grouped into sections; here's what each key does and its default.
 * `screen_width_handheld` / `screen_height_handheld`, `screen_width_docked` /
   `screen_height_docked` *(default 1280x720 / 1920x1080)* — render resolution
   per mode. `-1` (or anything out of range) auto-picks 1280x720 handheld /
-  1920x1080 docked. An explicit value is honoured up to 4K, so you can also
+  1920x1080 docked.
+  - An explicit value is honoured up to 4K, so you can also
   render **above** native for supersampling (e.g. 2560x1440 docked) — keep a
   16:9 ratio to avoid stretching. Applied live: changing dock state mid-session
   resizes the render target with no restart needed.
