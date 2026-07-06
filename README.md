@@ -1,6 +1,6 @@
 <div align=center>
 
-<img src="extras/banner.png" alt="Banner" width="40%">
+[<img src="extras/banner.png" alt="Banner" width="40%">](https://gbatemp.net/threads/chrono-trigger-switch-port.682630/)
 
 </div>
 <h1 align=center>Chrono Trigger — Nintendo Switch port</h1>
