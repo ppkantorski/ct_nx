@@ -2766,7 +2766,8 @@ static void apply_map_node_anchor(so_module *mod, float zoom) {
 // ---------------------------------------------------------------------------
 // 10.  menu_alignment_fix
 //
-//     Equipment menu vertical text alignment + equip/stat icon centering.
+//     Equipment menu vertical text alignment + equip/stat icon centering
+//     (A-F), plus Techs-page sub-chara panel alignment (G).
 //
 //     SYMPTOM (720p measurements, cap-glyph top/bottom rows from real
 //     screenshots): the item-select list labels (i.e. "Wooden Sword", its qty "1")
@@ -3081,6 +3082,55 @@ static const PatchEntry g_text_alignment_patches[] = {
   P_RAW(0x3617d0, 0x42f80000, 0x42f60000, "LV value Vec2 (124,-76) x -> 123.0 (left 1.0; both language paths)"),
   P_RAW(0x70870c, 0x52a85109, 0x52a850c9, "AttrIcon sprite mov w9,X-bits 68.0 -> 67.0 (left 1.0)"),
   P_RAW(0x361100, 0x43a60000, 0x43ac0000, "param Vec2 (332,-60) x -> 344.0 (defense value right edge = 7/8/5 edge)"),
+
+  // --- G. Techs-page sub-chara panel (MenuNodeTech::setupSubCharas @0x722e94
+  //        / nsMenu::createSubCharaStatusFrame @0x73635c):
+  //
+  //        SYMPTOM (720p measurements, both visible party rows): the
+  //        left-panel character text (name, "LV :", "HP :", "MP :" and
+  //        their values) sits a uniform 12 screen-px (6.0 design-units at
+  //        2x) LEFT of the main-menu status cards' columns -- label left
+  //        edges x=282 vs the cards' 294, value right edges 423 vs 435,
+  //        identical on every row -- so the text visibly jumps sideways on
+  //        the main-menu <-> Techs transition. Vertical placement already
+  //        matches (name/LV/HP/MP cap bands land on the same rows in both
+  //        screens) and needs nothing. The walking sprite is separately
+  //        off-centre in its gutter: node centre at x=236 (frame-quad
+  //        edges 219.5/252.5; = 80 canvas + 26 row + 12 local = design
+  //        118), versus the panel-edge/text-column midpoint
+  //        (200.5 + 293.5)/2 = 247 = design 123.5, i.e. 5.5 units short.
+  //
+  //        LAYOUT CHAIN (from disassembly): setupSubCharas places up to
+  //        four row layers via packed-Vec2 setPosition calls at
+  //        (26, -59/-143/-227/-311); the X half is materialised per row
+  //        as `mov x8,#0x41d00000` (26.0f in the packed low word). Each
+  //        row's children come from createSubCharaStatusFrame: sprite at
+  //        local X = 12.0 (`fmov s0,#12.0`, the vtable+0xc8 position
+  //        call), name label at rodata Vec2 (35,16) @0x361990, LV/HP/MP
+  //        block at base Vec2 (35, y) (MOVZ 0x420c immediate @0x736524).
+  //        80+26+35 = 141 = screen 282 reproduces the measurement exactly.
+  //
+  //        FIX -- decomposed to keep the shared text constants pristine:
+  //        createSubCharaStatusFrame also serves MenuNodeFormation::setup
+  //        (0x71013c) and MenuNodeTop::setup (0x7266bc) (both
+  //        showName=false -- the name-label rodata never renders there,
+  //        and it's single-xref @0x7364cc by the same binary-wide
+  //        adrp+ldr scan as B, so it was patchable -- but any edit to the
+  //        35.0 text constants would leak 1 screen-px of *column* drift
+  //        into those screens, the very artifact this section exists to
+  //        remove). Instead the entire +6.0 rides the four row-layer X
+  //        immediates (26 -> 32), which are Techs-only code, landing the
+  //        text exactly on the cards' columns; the sprite then takes
+  //        local 12.0 -> 11.5 (FMOV-imm8 encodable, same edit shape as
+  //        E's portrait fmov) for a net +5.5 = dead centre at 123.5. The
+  //        half-unit sprite nudge is the only edit visible to
+  //        Formation/Top -- their walking sprites shift 1 screen-px left,
+  //        imperceptible on irregular sprite art.
+  P_RAW(0x722fa0, 0xd2a83a08, 0xd2a84008, "tech row1 layer mov x8,X-bits 26.0 -> 32.0 (right 6.0)"),
+  P_RAW(0x722fe8, 0xd2a83a08, 0xd2a84008, "tech row2 layer mov x8,X-bits 26.0 -> 32.0 (right 6.0)"),
+  P_RAW(0x723030, 0xd2a83a08, 0xd2a84008, "tech row3 layer mov x8,X-bits 26.0 -> 32.0 (right 6.0)"),
+  P_RAW(0x723078, 0xd2a83a08, 0xd2a84008, "tech row4 layer mov x8,X-bits 26.0 -> 32.0 (right 6.0)"),
+  P_RAW(0x736458, 0x1e251000, 0x1e24f000, "sub-chara sprite fmov s0,#12.0 -> #11.5 (net +5.5, centred in gutter)"),
 };
 
 static void apply_bilinear_patches(so_module *mod) {
