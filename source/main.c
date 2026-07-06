@@ -557,8 +557,53 @@ static void update_keys(void) {
 // (resources.bin ships all nine under Localize/<code>/)
 // ---------------------------------------------------------------------------
 
+// config.language == "default" auto-selects whatever language the console
+// itself is set to (Settings > System > Language), same idea as most retail
+// games' own "System default" option. setGetSystemLanguage returns the raw
+// system LanguageCode straight from system settings -- unlike setGetLanguageCode,
+// it isn't filtered against any application language-support list, so it's a
+// direct read of "whatever the switch system is using". LanguageCode is a
+// packed string (see switchbrew's Settings services wiki page), so it's run
+// through setMakeLanguage to get the SetLanguage enum back out. Requires
+// setInitialize() to have been called first (done once near the top of main()).
+//
+// Maps that enum down to one of the codes resources.bin actually ships
+// (ja/en/de/it/es/fr/zh/zh-Hant/ko); regional variants collapse onto their
+// base language (e.g. en-GB and es-419 both count as their base). Anything
+// resources.bin doesn't have at all (Dutch, Portuguese, Russian, ...) falls
+// back to English, same as an unrecognized config.language value would.
+static const char *system_language_code(void) {
+  u64 code = 0;
+  if (R_FAILED(setGetSystemLanguage(&code)))
+    return "en";
+
+  SetLanguage lang;
+  if (R_FAILED(setMakeLanguage(code, &lang)))
+    return "en";
+
+  switch (lang) {
+    case SetLanguage_JA:     return "ja";
+    case SetLanguage_FR:
+    case SetLanguage_FRCA:   return "fr";
+    case SetLanguage_DE:     return "de";
+    case SetLanguage_IT:     return "it";
+    case SetLanguage_ES:
+    case SetLanguage_ES419:  return "es";
+    case SetLanguage_ZHCN:
+    case SetLanguage_ZHHANS: return "zh";
+    case SetLanguage_ZHTW:
+    case SetLanguage_ZHHANT: return "zh-Hant";
+    case SetLanguage_KO:     return "ko";
+    case SetLanguage_ENUS:
+    case SetLanguage_ENGB:
+    default:                 return "en"; // includes NL/PT/RU/PTBR -- unsupported
+  }
+}
+
 static int lang_index(void) {
   const char *l = config.language;
+  if (!strcmp(l, "default"))
+    l = system_language_code();
   if (!strcmp(l, "ja")) return 0;
   if (!strcmp(l, "en")) return 1;
   if (!strcmp(l, "de")) return 2;
@@ -709,6 +754,9 @@ int main(void) {
   set_screen_size(appletGetOperationMode());
 
   plInitialize(PlServiceType_User);
+  // Needed by system_language_code() (config.language == "default") the first
+  // time lang_index() runs, a few steps down during apply_game_patches().
+  setInitialize();
   gfx_init();
 
   SDL_SetMainReady();
@@ -932,6 +980,7 @@ int main(void) {
   // force the UI language before the engine builds the title scene
   g_lang_idx = lang_index();
   force_language();
+  setExit(); // done with system-language detection for good
 
   // JniHelper::setJavaVM + cocos_android_app_init (creates the AppDelegate)
   if (e_JNI_OnLoad)

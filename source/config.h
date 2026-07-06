@@ -47,7 +47,11 @@ extern int screen_width;
 extern int screen_height;
 
 // Default UI language (see lang_index in main.c for the supported codes).
-#define LANG_DEFAULT "en"
+// "default" means auto-detect: use the Switch console's own system language
+// (Settings > System > Language) if it's one resources.bin ships, otherwise
+// fall back to English. This is also config.language's fallback whenever the
+// value in config.ini is missing/blank/unrecognized.
+#define LANG_DEFAULT "default"
 
 typedef struct {
   // Per-mode render resolution. -1/-1 (or anything out of range) auto-picks
