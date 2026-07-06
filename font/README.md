@@ -12,6 +12,6 @@ Features
 • Cyrillic and Greek base alphabets
 • Countless additional special characters, diacritic variants, etc.
 
-Please contact me for any commercial use of my fonts.
+Please [contact me](https://caveras.net/) for any commercial use of my fonts.
 
 Copyright © 2016 Caveras. All rights reserved.
