@@ -2,6 +2,10 @@
 """
 remove_cursor_invert.py  (v9)  --  Chrono Trigger NX  libchrono.so  (ARM64)
 
+Copyright (C) 2026 ppkantorski <https://github.com/ppkantorski>
+This software may be modified and distributed under the terms of the MIT
+license. See the LICENSE file for details.
+
 WHAT THIS FIXES
 ===============
 When the cursor moves onto a menu item or dialogue choice:
