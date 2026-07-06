@@ -48,14 +48,11 @@ You're going to need the **`.apk`** for version 2.1.5. From it you need:
   `008.dat`, `007-en.dat`, `Shaders/`, `build_date.txt`)
 
 To install:
-1. Create a folder called `ct` in the `switch` folder on your SD card.
+1. Download `ct_nx.zip` and extract it to the root of your Switch SD card.
 2. From your `.apk`, extract **`lib/arm64-v8a/libchrono.so`** to `/switch/ct/`.
 3. From your `.apk`, extract **`lib/arm64-v8a/libc++_shared.so`** to `/switch/ct/`.
 4. From your `.apk`, copy the **whole `assets/` directory** to `/switch/ct/assets/`.
-5. Copy this project's **`font/`** folder to `/switch/ct/font/` (bundles
-   ChronoType, used by the [custom font](#configuration) feature by default).
-6. Copy **`ct_nx.nro`** into `/switch/ct/`.
-7. *(Optional)* Create `/switch/ct/mods/` and drop in any `.ctp` mods or folder
+5. *(Optional)* Create `/switch/ct/mods/` and drop in any `.ctp` mods or folder
    mods you want loaded — see [Mods](#mods) below.
 
 If you're upgrading an existing install, just overwrite `ct_nx.nro` (and
