@@ -31,7 +31,7 @@ files inside a minimal emulated Android environment.
   diagonal movement.
 * **Switch-native controller support** — real button prompts instead of
   touch/keyboard icons, optional right-stick movement, and remapping for the
-  otherwise-unused ZL/ZR/+/− buttons.
+  otherwise-unused (ZL | ZR | + | −) buttons.
 * **Touch UI removed** — the mobile-only on-screen button overlays are
   hidden automatically.
 * **Tidier install layout** — saves, mods, and settings each live in their own
