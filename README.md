@@ -79,4 +79,4 @@ users to legally own the original game.
 Unless specified otherwise, the source code provided in this repository is
 licensed under the [MIT License](/LICENSE).
 
-The included font is licensed under [CC BY-NC-SA 3.0]() and is not covered by this project's license.
+The included font is licensed under [CC BY-NC-SA 3.0](https://github.com/ppkantorski/ct_nx/blob/main/font/ChronoType/license.txt) and is not covered by this project's license.
