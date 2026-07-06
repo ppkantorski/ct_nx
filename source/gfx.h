@@ -29,12 +29,17 @@ void gfx_init(void);
 #define GFX_VALIGN_BOTTOM 2
 #define GFX_VALIGN_CENTER 3
 
-// Render UTF-8 text into a freshly malloc'd, premultiplied RGBA8888 buffer of
-// *out_w * *out_h * 4 bytes (byte order R,G,B,A). r/g/b/a are the 0-255 fill
-// colour. max_w / max_h are the requested constraint box (0 = size to content).
-// align_h / align_v position the text block within that box -- the vertical
-// alignment matters for EditBox/label fields, whose box is taller than the
-// text. wrap enables greedy word wrapping to max_w. Returns NULL on failure.
+// Render UTF-8 text into a premultiplied RGBA8888 buffer of *out_w * *out_h * 4
+// bytes (byte order R,G,B,A). r/g/b/a are the 0-255 fill colour. max_w / max_h
+// are the requested constraint box (0 = size to content). align_h / align_v
+// position the text block within that box -- the vertical alignment matters for
+// EditBox/label fields, whose box is taller than the text. wrap enables greedy
+// word wrapping to max_w. Returns NULL on failure.
+//
+// OWNERSHIP: the returned buffer is an internal grow-only scratch that is
+// REUSED on the next call. Callers must copy/upload it before the next
+// gfx_render_text_rgba() call and must NOT free() it. Not thread-safe (shares
+// the single-threaded assumption of the glyph cache).
 unsigned char *gfx_render_text_rgba(const char *text, int font_size,
                                     int r, int g, int b, int a,
                                     int align_h, int align_v,

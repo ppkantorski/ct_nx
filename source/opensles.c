@@ -242,16 +242,18 @@ static void mix_player(Player *p, int32_t *acc, int frames) {
   if (!p->playing)
     return;
 
-  const float g = p->gain;
+  // Gain as Q16 once per call; unity (65536) skips the multiply entirely,
+  // which is the common case for BGM and most SFX at full volume.
+  const int32_t gq = (int32_t)lrintf(p->gain * 65536.0f);
+  const int unity = (gq == 65536);
+
   for (int i = 0; i < frames; i++) {
     if (!p->cur || p->cur_pos >= p->cur_size) {
-      // current buffer finished: notify the engine so it enqueues the next
       if (p->cur) {
         p->cur = NULL;
         if (p->cb)
           p->cb(&p->bq_vt, p->cb_ctx);
       }
-      // pop the next buffer (queue access is the only thing that needs the lock)
       SDL_LockMutex(p->lock);
       const int have = (p->q_head != p->q_tail);
       BQBuffer b = { NULL, 0 };
@@ -261,7 +263,7 @@ static void mix_player(Player *p, int32_t *acc, int frames) {
       }
       SDL_UnlockMutex(p->lock);
       if (!have)
-        break; // underrun: rest is silence
+        break;
       p->cur = b.data;
       p->cur_size = b.size;
       p->cur_pos = 0;
@@ -276,8 +278,14 @@ static void mix_player(Player *p, int32_t *acc, int frames) {
       l = r = s[0];
       p->cur_pos += 2;
     }
-    acc[i * 2 + 0] += (int32_t)(l * g);
-    acc[i * 2 + 1] += (int32_t)(r * g);
+    if (unity) {
+      acc[i * 2 + 0] += l;
+      acc[i * 2 + 1] += r;
+    } else {
+      // int64 intermediate so gain >1.0 (positive millibel) can't overflow
+      acc[i * 2 + 0] += (int32_t)(((int64_t)l * gq) >> 16);
+      acc[i * 2 + 1] += (int32_t)(((int64_t)r * gq) >> 16);
+    }
   }
 }
 

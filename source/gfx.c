@@ -502,6 +502,29 @@ static void blit_glyph(unsigned char *out, int W, int H,
   }
 }
 
+// Grow-only scratch for the returned bitmap. The one caller
+// (createTextBitmapShadowStroke) hands this straight to the engine, which
+// copies it out synchronously (GetByteArrayRegion) before control returns --
+// so a single persistent buffer replaces a calloc/free on every label update,
+// and the typewriter effect's dozens-of-renders-per-line stop touching the
+// global malloc lock entirely after warmup. Relies on the same single-threaded
+// text-render assumption the (unlocked, shared) glyph cache above already makes.
+// NOTE: callers must NOT free the pointer returned by gfx_render_text_rgba().
+static unsigned char *g_rgba_scratch = NULL;
+static size_t g_rgba_scratch_cap = 0;
+
+static unsigned char *rgba_scratch(size_t need) {
+  if (need > g_rgba_scratch_cap) {
+    size_t cap = g_rgba_scratch_cap ? g_rgba_scratch_cap : 4096;
+    while (cap < need) cap <<= 1;
+    unsigned char *n = realloc(g_rgba_scratch, cap);
+    if (!n) return NULL;              // keep the old buffer on failure
+    g_rgba_scratch = n;
+    g_rgba_scratch_cap = cap;
+  }
+  return g_rgba_scratch;
+}
+
 unsigned char *gfx_render_text_rgba(const char *text, int font_size,
                                     int r, int g, int b, int a,
                                     int align_h, int align_v,
@@ -654,9 +677,11 @@ unsigned char *gfx_render_text_rgba(const char *text, int font_size,
   if (W > 4096) W = 4096;
   if (H > 4096) H = 4096;
 
-  unsigned char *out = calloc((size_t)W * H * 4, 1);
+  const size_t out_bytes = (size_t)W * H * 4;
+  unsigned char *out = rgba_scratch(out_bytes);
   if (!out)
     return NULL;
+  memset(out, 0, out_bytes); // reused buffer: zero it ourselves (calloc used to)
 
   // Stable vertical reference for the game-font path. Every line is centred on
   // ONE fixed ink box -- the cap height (and however far these specific glyphs'

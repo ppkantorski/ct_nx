@@ -774,7 +774,7 @@ int main(void) {
     u64 cores = 0;
     if (R_SUCCEEDED(svcGetInfo(&cores, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)) && cores) {
       const int ideal = __builtin_ctzll(cores); // lowest granted core (valid ideal)
-      svcSetThreadCoreMask(CUR_THREAD_HANDLE, ideal, cores);
+      svcSetThreadCoreMask(CUR_THREAD_HANDLE, ideal, 1ULL << ideal); // was: cores
     }
   }
 

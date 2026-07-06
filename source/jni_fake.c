@@ -460,7 +460,8 @@ static int create_text_bitmap(va_list va) {
   // the engine copies it out with GetByteArrayRegion.
   FakePriArray arr = { TAG_PRIARR, w * h * 4, 1, rgba };
   g_bitmap_cb(fake_env, NULL, w, h, &arr);
-  free(rgba);
+  // rgba is gfx.c's persistent scratch (copied out by the callback above via
+  // GetByteArrayRegion); it is reused, not owned here, so we must NOT free it.
   return 1;
 }
 

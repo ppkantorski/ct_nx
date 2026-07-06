@@ -218,14 +218,13 @@ static void update_label(int percent) {
                                               GFX_ALIGN_LEFT, GFX_VALIGN_TOP,
                                               0, 0, 0, &tw, &th);
   if (!rgba || tw <= 0 || th <= 0) {
-    if (rgba) free(rgba);
     debugPrintf("cache_progress: text render failed\n");
-    return;
+    return; // rgba is gfx.c's persistent scratch (or NULL); never freed here
   }
 
   glBindTexture(GL_TEXTURE_2D, g.text_tex);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-  free(rgba);
+  // rgba is gfx.c's reused scratch (copied into the texture just above); not freed here
   g.text_w = tw;
   g.text_h = th;
 }
