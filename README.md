@@ -101,10 +101,10 @@ It's grouped into sections; here's what each key does and its default.
   resizes the render target with no restart needed.
 
 **Language**
-* `language` *(default `en`)* — selects the in-game text/assets. One of
+* `language` *(default `default`)* — selects the in-game text/assets. One of
   `en fr de it es ja ko zh zh-Hant` (`zh`/`zh-Hans` = Simplified Chinese,
-  `zh-Hant` = Traditional Chinese). Anything other than `ja` uses the
-  localized (`-en` etc.) data.
+  `zh-Hant` = Traditional Chinese). The default value `default` selects language
+  based upon the current system language with fall back to `en` if not supported.
 
 **Font**
 * `game_font` *(default 1)* — render the engine's system-font labels with a TTF
