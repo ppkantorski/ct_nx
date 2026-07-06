@@ -69,8 +69,7 @@ or a forwarder, so the homebrew gets the full memory and required syscalls.
 Everything the port reads or writes lives under `/switch/ct/`:
 * `config.ini` — all settings (see **Configuration**)
 * `saves/` — save data (`common.bin`, `meta.bin`, `Chrono_sp_*.dat`) and the
-  cocos2d-x `Cocos2dxPrefsFile.txt` settings store, kept in their own subfolder
-  so the top-level directory stays tidy
+  cocos2d-x `Cocos2dxPrefsFile.txt` settings store
 * `mods/` — optional `.ctp` / folder mods (see **Mods**)
 * `font/` — optional TTFs for the custom font feature
 * `debug.log` — diagnostic log
