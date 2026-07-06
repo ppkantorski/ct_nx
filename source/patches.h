@@ -40,6 +40,8 @@
  * the expected build before writing anything. A mismatch prints a warning
  * and skips that entry -- it never silently corrupts.
  *
+ * Copyright (C) 2026 ppkantorski <https://github.com/ppkantorski>
+ *
  * This software may be modified and distributed under the terms
  * of the MIT license. See the LICENSE file for details.
  */
