@@ -129,7 +129,7 @@ ifneq ($(ROMFS),)
 	export NROFLAGS += --romfsdir=$(CURDIR)/$(ROMFS)
 endif
 
-.PHONY: $(BUILD) clean all
+.PHONY: $(BUILD) clean all sdout
 
 #---------------------------------------------------------------------------------
 all: $(BUILD)
@@ -139,9 +139,24 @@ $(BUILD):
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 #---------------------------------------------------------------------------------
+# builds the .nro (via `all`), then stages an sd-card-ready layout under
+# ./sdout/switch/ct/ (nro + font folder) and zips its contents to ct_nx.zip
+#---------------------------------------------------------------------------------
+sdout: all
+	@echo packaging sdout ...
+	@rm -fr sdout $(TARGET).zip
+	@mkdir -p sdout/switch/ct
+	@mkdir -p sdout/switch/ct/mods
+	@mkdir -p sdout/switch/ct/saves
+	@cp $(TARGET).nro sdout/switch/ct/
+	@cp -r font sdout/switch/ct/
+	@cd sdout && zip -r -q ../$(TARGET).zip .
+	@echo created $(TARGET).zip
+
+#---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
-	@rm -fr $(BUILD) $(TARGET).nro $(TARGET).nacp $(TARGET).elf
+	@rm -fr $(BUILD) $(TARGET).nro $(TARGET).nacp $(TARGET).elf sdout $(TARGET).zip
 
 #---------------------------------------------------------------------------------
 else
