@@ -110,7 +110,7 @@ static void set_defaults(void) {
   config.gl_threaded = 0;   // off by default -- enable per-device if you want the extra headroom
   config.gl_no_error = 1;   // skip mesa's GL call validation by default
   config.game_font = 1;     // try the in-game font for system-font labels (testing)
-  strlcpy(config.game_font_path, "/switch/ct/font/ChronoType.ttf", sizeof(config.game_font_path));
+  strlcpy(config.game_font_path, "/switch/ct/font/ChronoType/ChronoType.ttf", sizeof(config.game_font_path));
   config.game_font_scale = 0.90f; // 1.0 = auto-fit cap height to the shared font
   config.game_font_xscale = 1.0f; // 1.0 = no horizontal squeeze
   config.text_shadow = 1;         // crisp CT-style drop shadow on system-font labels

@@ -2767,10 +2767,10 @@ static void apply_map_node_anchor(so_module *mod, float zoom) {
 //     Equipment menu vertical text alignment + equip/stat icon centering.
 //
 //     SYMPTOM (720p measurements, cap-glyph top/bottom rows from real
-//     screenshots): the item-select list labels ("Wooden Sword", its qty "1")
-//     span rows 247-261; the stat column ("Strength : 9" .. "Magic Defense :
-//     6"), the category-button captions ("Bronze Blade" etc.), and the
-//     equipped-item info column (the "7"/"8"/"5" numbers and "Speed +1")
+//     screenshots): the item-select list labels (i.e. "Wooden Sword", its qty "1")
+//     span rows 247-261; the stat column (i.e. "Strength : 9" .. "Magic Defense :
+//     6"), the category-button captions (i.e. "Bronze Blade" etc.), and the
+//     equipped-item info column (i.e. the far right numbers and "Speed +1")
 //     span 244-258 on its row -- a uniform 3-screen-px (= 1.5 design-unit at
 //     the 2x handheld scale) HIGH offset. The HP/MP/LV/EXP/Next block above
 //     "Strength" is NOT part of this -- it was never misaligned against
@@ -2785,9 +2785,7 @@ static void apply_map_node_anchor(so_module *mod, float zoom) {
 //         text matches middle-anchored text only when
 //         (buttonHeight/2 + labelH/2) == chosen top offset, and the
 //         offsets used (e.g. y = buttonHeight - 10 in
-//         createCategoryButtons) solve that for labelH = 16. The real
-//         ChronoType 12pt label box is 19 units tall, so every
-//         top-anchored label lands labelH/2 - 8 = 1.5 units high.
+//         createCategoryButtons) solve that for labelH = 16.
 //     Since the item list is both correct-by-construction and the page's
 //     dominant interactive element, the stat rows and everything keyed off
 //     them move DOWN 1.5 to match it. The top block is left untouched.
