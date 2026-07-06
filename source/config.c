@@ -57,7 +57,11 @@
   CONFIG_VAR_INT(native_controller); \
   CONFIG_VAR_INT(controller_glyphs); \
   CONFIG_VAR_INT(fix_diagonal_movement); \
-  CONFIG_VAR_INT(right_stick_mirror);
+  CONFIG_VAR_INT(right_stick_mirror); \
+  CONFIG_VAR_STR(key_zl); \
+  CONFIG_VAR_STR(key_zr); \
+  CONFIG_VAR_STR(key_plus); \
+  CONFIG_VAR_STR(key_minus);
 
 // Dev-only knobs: recognized on read (so they can still be hand-tuned in
 // config.ini) but deliberately left out of CONFIG_VARS above, so write_config
@@ -119,6 +123,10 @@ static void set_defaults(void) {
   config.controller_glyphs = 1;    // force <BTN_*> dialogue tags to the pad glyph set
   config.fix_diagonal_movement = 1; // smooth diagonal movement (matches cardinal speed)
   config.right_stick_mirror = 1;    // right stick emulates the left stick (movement)
+  strlcpy(config.key_zl,    "key_zl",    sizeof(config.key_zl));    // unused buttons remap to themselves by default (no-op)
+  strlcpy(config.key_zr,    "key_zr",    sizeof(config.key_zr));
+  strlcpy(config.key_plus,  "key_plus",  sizeof(config.key_plus));
+  strlcpy(config.key_minus, "key_minus", sizeof(config.key_minus));
   config.fixed_timestep = 1;        // constant 1/60 dt -> removes dt-jitter drift (anim/audio sync)
   config.ui_scale_fix = 1;            // stamp the whole design-resolution aspect table (640x360, both modes)
   config.force_nearest = 0;           // off by default; enforce NEAREST on every texture at the GL wrapper (kills the bilinear upscale proven by the framebuffer screenshot)

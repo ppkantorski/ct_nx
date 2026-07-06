@@ -421,8 +421,71 @@ static const KeyMap g_keymap[] = {
 static PadState pad;
 static int g_prev[NUM_KEYMAP];
 
+// ---- optional button remapping (config: key_zl / key_zr / key_plus / key_minus)
+// Each of the four normally-unused buttons can be redirected to emit another
+// button's events instead of its own. g_remap[i] is the keymap index whose
+// cc_key/android_kc send_button() should emit when physical button i fires;
+// it defaults to i (self = unchanged) for every entry, and only the four
+// source rows are ever pointed elsewhere. Edge tracking in update_keys()
+// stays keyed to the physical button (g_prev[]), so only the emitted event
+// changes -- press/release of the real button still drives everything.
+static int g_remap[NUM_KEYMAP];
+
+// The remap targets we accept, by config token -> the HidNpadButton mask of
+// the keymap row that implements them. Only face/shoulder buttons the engine
+// actually binds are offered (a/b/x/y/l/r); this is also the set the user's
+// config strings are validated against.
+typedef struct { const char *token; u64 mask; } RemapTarget;
+static const RemapTarget g_remap_targets[] = {
+  { "key_a", HidNpadButton_A },
+  { "key_b", HidNpadButton_B },
+  { "key_x", HidNpadButton_X },
+  { "key_y", HidNpadButton_Y },
+  { "key_l", HidNpadButton_L },
+  { "key_r", HidNpadButton_R },
+};
+#define NUM_REMAP_TARGETS (sizeof(g_remap_targets) / sizeof(*g_remap_targets))
+
+// Find the keymap index whose (sole) mask bit is exactly `mask`. Returns -1 if
+// no row matches -- used both to locate a remap source and its target row.
+static int keymap_index_for_mask(u64 mask) {
+  for (unsigned i = 0; i < NUM_KEYMAP; i++)
+    if (g_keymap[i].mask == mask) return (int)i;
+  return -1;
+}
+
+// Resolve one source button's config string to a target keymap index. `value`
+// is the config token (e.g. "key_a"); `self_mask` is the source's own button.
+// Unrecognised tokens, an empty string, or the source's own name all resolve
+// to the source itself (no remap) -- exactly the "behave as is" fallback.
+static void resolve_one_remap(u64 self_mask, const char *value) {
+  const int src = keymap_index_for_mask(self_mask);
+  if (src < 0) return; // source not in keymap (shouldn't happen); nothing to do
+  for (unsigned t = 0; t < NUM_REMAP_TARGETS; t++) {
+    if (strcmp(value, g_remap_targets[t].token) == 0) {
+      const int dst = keymap_index_for_mask(g_remap_targets[t].mask);
+      if (dst >= 0) g_remap[src] = dst; // valid target: redirect
+      return;                           // (dst<0 can't happen for our set)
+    }
+  }
+  // no match (self-name, blank, or anything unknown) -> leave g_remap[src]=src
+}
+
+// Build g_remap[] from config. Call once, after read_config(), before the
+// input loop. Identity by default; only the four configured sources move.
+static void init_button_remap(void) {
+  for (unsigned i = 0; i < NUM_KEYMAP; i++) g_remap[i] = (int)i;
+  resolve_one_remap(HidNpadButton_ZL,    config.key_zl);
+  resolve_one_remap(HidNpadButton_ZR,    config.key_zr);
+  resolve_one_remap(HidNpadButton_Plus,  config.key_plus);
+  resolve_one_remap(HidNpadButton_Minus, config.key_minus);
+}
+
 static void send_button(int idx, int pressed) {
-  const KeyMap *k = &g_keymap[idx];
+  // Emit the remap target's events (defaults to idx itself, i.e. unchanged).
+  // Only the four configured source buttons (ZL/ZR/+/-) ever point elsewhere;
+  // for every other button g_remap[idx] == idx, so this is a no-op lookup.
+  const KeyMap *k = &g_keymap[g_remap[idx]];
   // Keyboard path: only when native_controller is OFF. The engine flips to
   // keyboard-style glyphs the moment it sees a key event, so suppressing these
   // is what keeps it in native controller mode (real Switch-button prompts).
@@ -893,6 +956,7 @@ int main(void) {
   padInitializeAny(&pad);
   hidInitializeTouchScreen();
   for (unsigned i = 0; i < NUM_KEYMAP; i++) g_prev[i] = 0;
+  init_button_remap(); // resolve key_zl/zr/plus/minus config -> g_remap[]
   // register controller 0 so Controller::getKeyStatus polling has a target
   if (e_ctrlConnected)
     e_ctrlConnected(fake_env, thiz, g_ctrl_name, 0);

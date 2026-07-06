@@ -140,9 +140,29 @@ typedef struct {
   //                        untouched. 0 = only the real left stick drives
   //                        that channel; the right stick's own position is
   //                        still sent separately as CC_JOY_RX/RY either way.
+  //   key_zl / key_zr / key_plus / key_minus -- remap the four buttons this
+  //                        game otherwise leaves unused to any other face /
+  //                        shoulder button. Set each to one of:
+  //                          key_a  key_b  key_x  key_y  key_l  key_r
+  //                        and pressing the physical button then behaves
+  //                        exactly as if the named button were pressed --
+  //                        same engine action AND same on-screen glyph. Set
+  //                        to its own name (key_zl = key_zl, the default) or
+  //                        leave it at anything unrecognised to keep the
+  //                        button behaving as it does normally (ZL/ZR do
+  //                        nothing in-game; +/- open the pause/system menu
+  //                        and select). Only these four sources are
+  //                        remappable, and only to those six targets; the
+  //                        edge/press tracking stays keyed to the real
+  //                        button, so only what gets emitted changes. Takes
+  //                        effect at boot (resolved once); relaunch to change.
   int native_controller;
   int controller_glyphs;
   int right_stick_mirror;
+  char key_zl[16];
+  char key_zr[16];
+  char key_plus[16];
+  char key_minus[16];
   // fix_diagonal_movement -- 1 = patch FieldImpl::UserScroll's diagonal-input
   //                          cases to accumulate position from the raw
   //                          per-frame delta directly (matching how
