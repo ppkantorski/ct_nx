@@ -2,6 +2,10 @@
 """
 remove_mobile_ui.py (v8) -- Chrono Trigger Android libchrono.so
 
+Copyright (C) 2026 ppkantorski <https://github.com/ppkantorski>
+This software may be modified and distributed under the terms of the MIT
+license. See the LICENSE file for details.
+
 Hides the on-screen touch-overlay buttons (field menu button, world-map
 menu/map/warp buttons, AND all five right-side title-screen icon buttons)
 without breaking controller input. Replaces v1-v4.
