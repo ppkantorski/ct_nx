@@ -269,7 +269,7 @@ You're going to need devkitA64 and the following devkitPro packages:
 * TheOfficialFloW for the original Vita ports that pioneered this technique
 * [ppkantorski](https://github.com/ppkantorski/) for the `config.ini` revision,
   mod support, font loading, all of the graphical and UI fixes, controller remapping,
-  save/mods/config directory reorganization, and the tools.
+  save/mods/config directory reorganization, and patching tools.
 
 ### Support
 
