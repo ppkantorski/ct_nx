@@ -35,6 +35,8 @@ files inside a minimal emulated Android environment.
 * **Tidier install layout** — saves, mods, and settings each live in their own
   subfolder; upgrading from an older install migrates everything automatically.
 
+---
+
 ### How to install
 
 You're going to need the **`.apk`** for version 2.1.5. From it you need:
@@ -58,6 +60,8 @@ If you're upgrading an existing install, just overwrite `ct_nx.nro` (and
 `libchrono.so`/`libc++_shared.so`/`assets/` if they changed) — your settings and
 save data are migrated automatically on first launch, see **Notes** below.
 
+---
+
 ### Notes
 
 This will not work in applet/album mode. Use a game override (hold R on a title)
@@ -77,10 +81,13 @@ automatically the first time you launch — an old `config.txt` becomes
 `config.ini`, and any saves still sitting loose in `/switch/ct/` move into
 `/switch/ct/saves/`. Nothing else in the folder is touched.
 
+---
+
 ### Configuration
 
 `config.ini` is created (or migrated from an older `config.txt`) on first run.
 It's grouped into sections; here's what each key does and its default.
+
 
 **Screen**
 * `screen_width_handheld` / `screen_height_handheld`, `screen_width_docked` /
@@ -182,6 +189,8 @@ shimmer-free — the two work together rather than one replacing the other.
   key_l key_r`. The physical button then behaves exactly as if the named
   button were pressed, glyph included.
 
+---
+
 ### Mods
 
 Drop ChronoMod-compatible `.ctp` patch files into your mods folder — `mods/`
@@ -212,6 +221,8 @@ Since it works from your own copy of the game, none of Square Enix's
 original text ever leaves your machine — only the substitution script is
 ours.
 
+---
+
 ### Advanced: offline binary patch tools
 
 `tools/` also includes the standalone Python patchers the boot-time
@@ -236,6 +247,8 @@ You're going to need devkitA64 and the following devkitPro packages:
 * `switch-ffmpeg` (+ its codec deps `switch-dav1d`, `switch-libopus`,
   `switch-libvorbisidec`, `switch-libwebp`, `switch-libogg`)
 
+---
+
 ### Credits
 
 * **fgsfds** for [max_nx](https://github.com/fgsfdsfgs/max_nx), which this loader is
@@ -245,11 +258,15 @@ You're going to need devkitA64 and the following devkitPro packages:
   mod support, font loading, all of the graphical and UI fixes, controller mapping / remapping,
   save/mods/config directory reorganization, code optimizations, and patching tools.
 
+---
+
 ### Support
 
 If you enjoy my work and want to support me :
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/D1D1P2MOG)
+
+---
 
 ### Legal
 
