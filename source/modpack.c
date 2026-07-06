@@ -64,6 +64,8 @@
  * single fread per blob (no intermediate copy), cutting peak RAM by ~50% and
  * eliminating the double-copy that the previous stream_copy helper did.
  *
+ * Copyright (C) 2026 ppkantorski <https://github.com/ppkantorski>
+ *
  * This software may be modified and distributed under the terms
  * of the MIT license. See the LICENSE file for details.
  */
