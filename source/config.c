@@ -22,53 +22,57 @@
 // write_config (prints a "; ..." section header line), so config.ini comes
 // out grouped and readable instead of one flat list of keys.
 #define CONFIG_VARS \
-  CONFIG_COMMENT("--- Screen ---"); \
-  CONFIG_VAR_INT(screen_width_handheld); \
-  CONFIG_VAR_INT(screen_height_handheld); \
-  CONFIG_VAR_INT(screen_width_docked); \
-  CONFIG_VAR_INT(screen_height_docked); \
   CONFIG_COMMENT("--- Language ---"); \
   CONFIG_VAR_STR(language); \
   CONFIG_COMMENT("--- Font ---"); \
   CONFIG_VAR_INT(game_font); \
   CONFIG_VAR_STR(game_font_path); \
   CONFIG_VAR_FLOAT(game_font_scale); \
-  CONFIG_VAR_FLOAT(game_font_xscale); \
   CONFIG_COMMENT("--- Text shadow ---"); \
   CONFIG_VAR_INT(text_shadow); \
   CONFIG_VAR_FLOAT(text_shadow_scale); \
   CONFIG_VAR_INT(text_shadow_alpha); \
-  CONFIG_COMMENT("--- Performance ---"); \
-  CONFIG_VAR_INT(gl_threaded); \
-  CONFIG_VAR_INT(gl_no_error); \
-  CONFIG_COMMENT("--- Runtime binary patches ---"); \
-  CONFIG_VAR_INT(remove_mobile_ui); \
-  CONFIG_VAR_INT(cursor_fix); \
-  CONFIG_VAR_INT(remove_bilinear_filter); \
-  CONFIG_VAR_INT(fixed_timestep); \
-  CONFIG_VAR_INT(ui_scale_fix); \
-  CONFIG_VAR_INT(force_nearest); \
-  CONFIG_VAR_INT(game_area_width_fix); \
-  CONFIG_VAR_INT(menu_alignment_fix); \
-  CONFIG_VAR_INT(field_zoom_fix); \
-  CONFIG_VAR_FLOAT(field_zoom); \
-  CONFIG_VAR_INT(map_zoom_fix); \
-  CONFIG_VAR_FLOAT(map_zoom); \
   CONFIG_COMMENT("--- Input / controller ---"); \
-  CONFIG_VAR_INT(native_controller); \
-  CONFIG_VAR_INT(controller_glyphs); \
-  CONFIG_VAR_INT(fix_diagonal_movement); \
   CONFIG_VAR_INT(right_stick_mirror); \
   CONFIG_VAR_STR(key_zl); \
   CONFIG_VAR_STR(key_zr); \
   CONFIG_VAR_STR(key_plus); \
-  CONFIG_VAR_STR(key_minus);
+  CONFIG_VAR_STR(key_minus); \
+  CONFIG_COMMENT("--- Screen ---"); \
+  CONFIG_VAR_INT(screen_width_handheld); \
+  CONFIG_VAR_INT(screen_height_handheld); \
+  CONFIG_VAR_INT(screen_width_docked); \
+  CONFIG_VAR_INT(screen_height_docked); \
+  CONFIG_VAR_FLOAT(field_zoom); \
+  CONFIG_VAR_FLOAT(map_zoom); \
+  CONFIG_COMMENT("--- Graphics ---"); \
+  CONFIG_VAR_INT(remove_bilinear_filter); \
+  CONFIG_VAR_INT(force_nearest); \
+  CONFIG_COMMENT("--- Performance (experimental) ---"); \
+  CONFIG_VAR_INT(gl_threaded); \
+  CONFIG_COMMENT("--- Runtime binary patches ---"); \
+  CONFIG_VAR_INT(remove_mobile_ui); \
+  CONFIG_VAR_INT(fixed_timestep); \
+  CONFIG_VAR_INT(ui_scale_fix); \
 
 // Dev-only knobs: recognized on read (so they can still be hand-tuned in
 // config.ini) but deliberately left out of CONFIG_VARS above, so write_config
 // never emits them and a freshly generated config.ini never surfaces them to
-// end users. See map_zoom_y_trim's comment in config.h for why.
+// end users. set_defaults() still seeds all of these, so they're fully
+// functional at their default value even though config.ini never shows them.
+// See map_zoom_y_trim's comment in config.h for why that one in particular
+// stays hidden.
 #define CONFIG_VARS_HIDDEN \
+  CONFIG_VAR_FLOAT(game_font_xscale); \
+  CONFIG_VAR_INT(gl_no_error); \
+  CONFIG_VAR_INT(cursor_fix); \
+  CONFIG_VAR_INT(game_area_width_fix); \
+  CONFIG_VAR_INT(menu_alignment_fix); \
+  CONFIG_VAR_INT(field_zoom_fix); \
+  CONFIG_VAR_INT(map_zoom_fix); \
+  CONFIG_VAR_INT(native_controller); \
+  CONFIG_VAR_INT(controller_glyphs); \
+  CONFIG_VAR_INT(fix_diagonal_movement); \
   CONFIG_VAR_FLOAT(map_zoom_y_trim);
 
 Config config;
