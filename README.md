@@ -267,9 +267,9 @@ You're going to need devkitA64 and the following devkitPro packages:
 * fgsfds for [max_nx](https://github.com/fgsfdsfgs/max_nx), which this loader is
   based on
 * TheOfficialFloW for the original Vita ports that pioneered this technique
-* [ppkantorski](https://github.com/ppkantorski/) for the `config.ini` revision,
-  mod support, font loading, all of the graphical and UI fixes, controller remapping,
-  save/mods/config directory reorganization, and patching tools.
+* [ppkantorski](https://github.com/ppkantorski/) for the configurations revision,
+  mod support, font loading, all of the graphical and UI fixes, controller mapping / remapping,
+  save/mods/config directory reorganization, code optimizations, and patching tools.
 
 ### Support
 
