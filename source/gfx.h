@@ -5,6 +5,8 @@
  * nativeInitBitmapDC. We replace the Java raster with FreeType on the Switch
  * shared font and produce the same premultiplied RGBA8888 byte layout.
  *
+ * Copyright (C) 2026 ppkantorski <https://github.com/ppkantorski>
+ *
  * This software may be modified and distributed under the terms
  * of the MIT license. See the LICENSE file for details.
  */
