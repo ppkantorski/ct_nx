@@ -7,7 +7,7 @@
 
 </div>
 
-This is a wrapper/port of the Android version of *Chrono Trigger*
+This is a wrapper/port of the Android version of *[Chrono Trigger](https://play.google.com/store/apps/details?id=com.square_enix.android_googleplay.chrono)*
 (`com.square_enix.android_googleplay.chrono`, v2.1.5). It loads the original game
 binaries, patches them and runs them: we natively run the original Android `.so`
 files inside a minimal emulated Android environment.
@@ -258,7 +258,7 @@ trademark of its respective owner. All Rights Reserved.
 
 No assets or program code from the original game or its Android port are included
 in this project. We do not condone piracy in any way, shape or form and encourage
-users to legally own the original game.
+users to legally own the [original game](https://play.google.com/store/apps/details?id=com.square_enix.android_googleplay.chrono).
 
 Unless specified otherwise, the source code provided in this repository is
 licensed under the [MIT License](/LICENSE).
