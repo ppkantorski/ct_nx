@@ -1,0 +1,48 @@
+[config]
+; --- Screen ---
+screen_width_handheld = 1280
+screen_height_handheld = 720
+screen_width_docked = 1920
+screen_height_docked = 1080
+
+; --- Language ---
+language = en
+
+; --- Font ---
+game_font = 1
+game_font_path = /switch/ct/font/ChronoType/ChronoType.ttf
+game_font_scale = 0.9
+game_font_xscale = 1
+
+; --- Text shadow ---
+text_shadow = 1
+text_shadow_scale = 1
+text_shadow_alpha = 200
+
+; --- Performance ---
+gl_threaded = 0
+gl_no_error = 1
+
+; --- Runtime binary patches ---
+remove_mobile_ui = 1
+cursor_fix = 1
+remove_bilinear_filter = 1
+fixed_timestep = 1
+ui_scale_fix = 1
+force_nearest = 0
+game_area_width_fix = 1
+menu_alignment_fix = 1
+field_zoom_fix = 1
+field_zoom = 2
+map_zoom_fix = 1
+map_zoom = 2
+
+; --- Input / controller ---
+native_controller = 1
+controller_glyphs = 1
+fix_diagonal_movement = 1
+right_stick_mirror = 1
+key_zl = key_zl
+key_zr = key_zr
+key_plus = key_plus
+key_minus = key_minus
