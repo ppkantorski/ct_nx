@@ -120,7 +120,7 @@ It's grouped into sections; here's what each key does and its default.
   each label's own alpha, so fades stay consistent.
 
 **Performance**
-* `gl_threaded` *(default 0)* — run mesa's GL command submission on a second CPU
+* `gl_threaded` *(default 0)* — (experimental) run mesa's GL command submission on a second CPU
   core (glthread), offloading work the single-threaded engine spends inside the
   GPU driver. No-op if mesa lacks it; disable if it causes trouble.
 * `gl_no_error` *(default 1)* — skip mesa's internal validation of GL calls,
