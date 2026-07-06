@@ -165,10 +165,9 @@ launch rather than instantly.
 * `field_zoom_fix` *(default 1)* / `field_zoom` *(default 2.0)* — fixes an
   uneven zoom on the field camera that's the real cause of the shimmer you
   see while scrolling around. `field_zoom` sets how zoomed in the camera is —
-  lower shows more map, higher shows less; whole numbers (1, 2, 3…) look
-  cleanest.
+  lower shows more map, higher shows less. Recommend values are currently 2.0 and 1.75.
 * `map_zoom_fix` *(default 1)* / `map_zoom` *(default 2.0)* — the same fix
-  and zoom control, for the overworld map screen.
+  and zoom control, for the overworld map screen. Recommend values are currently 2.0 and 1.75.
 
 **Input / controller**
 * `native_controller` *(default 1)* — drive the engine purely through its
