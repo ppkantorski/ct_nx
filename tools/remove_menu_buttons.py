@@ -2,6 +2,10 @@
 """
 remove_menu_buttons.py (v1) -- Chrono Trigger Android libchrono.so
 
+Copyright (C) 2026 ppkantorski <https://github.com/ppkantorski>
+This software may be modified and distributed under the terms of the MIT
+license. See the LICENSE file for details.
+
 Companion to remove_mobile_ui.py. That script hides the field/world-map/
 title-screen touch overlay buttons. This one targets the menu SYSTEM screens
 (Equip, Item, Tech, Config, SaveLoad, Formation, Suspend, and the top-level
