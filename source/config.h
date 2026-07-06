@@ -210,7 +210,7 @@ typedef struct {
   // binary patch -- changing this in config.ini requires a game relaunch;
   // the live config reload deliberately does not (and cannot) re-patch.
   int game_area_width_fix;
-  // text_alignment_fix -- 1 = fix the Equipment menu's vertical text
+  // menu_alignment_fix -- 1 = fix the Equipment menu's vertical text
   // misalignment: every label the equip page itself places (the seven
   // stat rows Strength..Magic Defense and their values, the HP/MP/EXP top
   // block, the category-button captions "Bronze Blade" etc., and the
@@ -227,7 +227,7 @@ typedef struct {
   // offset is exactly 3px at 720p on every affected row. Equip menu only;
   // no other menu shares these code paths. Boot-time binary patch:
   // relaunch to change.
-  int text_alignment_fix;
+  int menu_alignment_fix;
   // field_zoom_fix -- 1 = set the field view's design->art densities to
   // exactly 1/2 on both axes (see patches.h section 9). View becomes 320x180
   // art px: art pixels are square AND integer (4px handheld / 6px docked) in

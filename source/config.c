@@ -48,7 +48,7 @@
   CONFIG_VAR_INT(ui_scale_fix); \
   CONFIG_VAR_INT(force_nearest); \
   CONFIG_VAR_INT(game_area_width_fix); \
-  CONFIG_VAR_INT(text_alignment_fix); \
+  CONFIG_VAR_INT(menu_alignment_fix); \
   CONFIG_VAR_INT(field_zoom_fix); \
   CONFIG_VAR_FLOAT(field_zoom); \
   CONFIG_VAR_INT(map_zoom_fix); \
@@ -121,9 +121,9 @@ static void set_defaults(void) {
   config.right_stick_mirror = 1;    // right stick emulates the left stick (movement)
   config.fixed_timestep = 1;        // constant 1/60 dt -> removes dt-jitter drift (anim/audio sync)
   config.ui_scale_fix = 1;            // stamp the whole design-resolution aspect table (640x360, both modes)
-  config.force_nearest = 1;           // enforce NEAREST on every texture at the GL wrapper: kills the bilinear upscale proven by the framebuffer screenshot
+  config.force_nearest = 0;           // off by default; enforce NEAREST on every texture at the GL wrapper (kills the bilinear upscale proven by the framebuffer screenshot)
   config.game_area_width_fix = 1;     // adaptive ctr::gameArea width (UI-layer consumers); no-op at stock 568 design
-  config.text_alignment_fix = 1;      // Equipment menu: drop stat/HP-block/button/equip-info text 1.5u to match the item list rows
+  config.menu_alignment_fix = 1;      // Equipment menu: drop stat/HP-block/button/equip-info text 1.5u to match the item list rows
   config.field_zoom_fix = 1;          // square+integer field pixels (320x180 view); boot-time patch, relaunch to change
   config.field_zoom = 2.0f;           // 4x4 handheld / 6x6 art-px (original field_zoom_fix framing); lower = more map visible
   config.map_zoom_fix = 1;            // on by default

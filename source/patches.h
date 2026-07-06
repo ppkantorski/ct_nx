@@ -2762,7 +2762,7 @@ static void apply_map_node_anchor(so_module *mod, float zoom) {
 // helper that scans the known function range.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// 10.  text_alignment_fix
+// 10.  menu_alignment_fix
 //
 //     Equipment menu vertical text alignment + equip/stat icon centering.
 //
@@ -3279,8 +3279,8 @@ static inline void apply_game_patches(so_module *mod) {
     apply_patches(mod, g_gamearea_patches, PATCH_COUNT(g_gamearea_patches));
   }
 
-  if (config.text_alignment_fix) {
-    debugPrintf("patches: applying text_alignment_fix\n");
+  if (config.menu_alignment_fix) {
+    debugPrintf("patches: applying menu_alignment_fix\n");
     apply_patches(mod, g_text_alignment_patches, PATCH_COUNT(g_text_alignment_patches));
   }
 

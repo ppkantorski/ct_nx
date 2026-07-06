@@ -88,22 +88,6 @@ static void check_syscalls(void) {
   if (envGetOwnProcessHandle() == INVALID_HANDLE) fatal_error("Own process handle is unavailable.");
 }
 
-// Live config reload (dev/tuning aid): the main loop stats config.ini every
-// CONFIG_POLL_INTERVAL_FRAMES frames rather than every single frame -- stat()
-// is a real filesystem syscall (unlike the in-memory appletGetOperationMode()
-// check next to it), and checking twice a second is still instant from a
-// human editing an Ultrahand slider. s_config_mtime is the mtime we last
-// acted on; see its initialization right after the first read_config() in
-// main() so the very first poll doesn't misfire.
-#define CONFIG_POLL_INTERVAL_FRAMES 30
-static time_t s_config_mtime = 0;
-// Debounce for the live reload: a change is only applied once the file's
-// mtime has been stable for two consecutive polls. Protects against reading
-// config.ini mid-write (Ultrahand's set-ini-val truncates + rewrites) and
-// coalesces slider-drag write storms into a single reload.
-static time_t s_config_mtime_pending = 0;
-static int    s_config_poll_ctr = 0;
-
 static void check_data(void) {
   struct stat st;
   if (stat(SO_NAME, &st) < 0)    fatal_error("Could not find\n%s.\nCheck your data files.", SO_NAME);
@@ -654,16 +638,6 @@ int main(void) {
   read_config(CONFIG_NAME);
   write_config(CONFIG_NAME);
 
-
-  // Live config reload (dev/tuning aid): remember config.ini's mtime as of
-  // this initial load so the first poll in the main loop below doesn't
-  // mistake "file already existed" for "file just changed". See the
-  // s_config_mtime poll in the main loop for the actual reload.
-  {
-    struct stat st;
-    if (stat(CONFIG_NAME, &st) == 0) s_config_mtime = st.st_mtime;
-  }
-
   check_syscalls();
   check_data();
   set_screen_size(appletGetOperationMode());
@@ -942,42 +916,6 @@ int main(void) {
           // recomputes the viewport/scale factor against the (unchanged)
           // design resolution -- the same path Android uses for rotation.
           e_nativeOnSurfaceChanged(fake_env, thiz, screen_width, screen_height);
-      }
-    }
-
-    // Live config reload (dev/tuning aid): pick up screen_width/height edits
-    // made on disk -- e.g. from an Ultrahand/overlay config editor -- without
-    // relaunching. Re-stat every CONFIG_POLL_INTERVAL_FRAMES frames; on a
-    // change, re-parse config.ini and push the new size through the exact
-    // same set_screen_size()/egl_resize()/nativeOnSurfaceChanged() path the
-    // dock/undock handler above uses, so there's only one resize path to
-    // trust. Note read_config() re-reads every field (language etc. too),
-    // not just the screen ones -- fine for a tuning tool, but worth knowing
-    // if you're editing other keys live at the same time.
-    if (++s_config_poll_ctr >= CONFIG_POLL_INTERVAL_FRAMES) {
-      s_config_poll_ctr = 0;
-      struct stat st;
-      if (stat(CONFIG_NAME, &st) == 0 && st.st_mtime != s_config_mtime) {
-        if (st.st_mtime != s_config_mtime_pending) {
-          // first sighting of this mtime: wait one poll for the write to
-          // settle before parsing (see s_config_mtime_pending above)
-          s_config_mtime_pending = st.st_mtime;
-        } else {
-          // stable across two polls: safe to apply
-          s_config_mtime = st.st_mtime;
-          s_config_mtime_pending = 0;
-          const int old_w = screen_width, old_h = screen_height;
-          read_config(CONFIG_NAME);
-          set_screen_size(cur_mode);
-          // Only touch the EGL surface if the effective size really changed.
-          // Edits to non-screen keys (patch toggles, font settings, ...)
-          // must NOT churn a surface destroy/recreate cycle -- needless
-          // recreations are both pointless and the main black-screen risk.
-          if (screen_width != old_w || screen_height != old_h) {
-            if (egl_resize() && e_nativeOnSurfaceChanged)
-              e_nativeOnSurfaceChanged(fake_env, thiz, screen_width, screen_height);
-          }
-        }
       }
     }
 
