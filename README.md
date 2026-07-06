@@ -170,10 +170,6 @@ launch rather than instantly.
 * `map_zoom_fix` *(default 1)* / `map_zoom` *(default 2.0)* — the same fix
   and zoom control, for the overworld map screen.
 
-Note: `remove_bilinear_filter`/`force_nearest` make texture edges crisp, but
-it's the zoom/scale fixes above that actually make pixels square and
-shimmer-free — the two work together rather than one replacing the other.
-
 **Input / controller**
 * `native_controller` *(default 1)* — drive the engine purely through its
   native controller path, so on-screen prompts and dialogue button tags show
