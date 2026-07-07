@@ -710,7 +710,7 @@ CAT_B = {
             {"kind": "id", "id": "MSG_TUTO_HELP_08", "orig_crc": 0xe890d519, "new": 'MSG_TUTO_HELP_08,Um ein Symbol auszublenden, wähle es aus und drücke\\die <BTN_WARP>-Taste, oder wähle das Feld\\mit der Aufschrift „Ein/Aus“.'},
             {"kind": "id", "id": "MSG_TUTO_HELP_09", "orig_crc": 0xa27e24f6, "new": 'MSG_TUTO_HELP_09,Um alle Symbole auf ihre Standardpositionen\\zurückzusetzen, drücke SELECT oder wähle das Feld\\mit der Aufschrift „Standard“.'},
             {"kind": "id", "id": "MSG_TUTO_HELP_11", "orig_crc": 0x4a1ad4fc, "new": 'MSG_TUTO_HELP_11,Wenn du mit der Anpassung fertig bist, drücke\\START oder wähle „Einstellung abschließen“.'},
-            {"kind": "id", "id": "MSG_TUTO_HELP_13", "orig_crc": 0xc827383b, "new": 'MSG_TUTO_HELP_13,Press A Button'},
+            {"kind": "id", "id": "MSG_TUTO_HELP_13", "orig_crc": 0xc827383b, "new": 'MSG_TUTO_HELP_13,Drücke die <BTN_CONF>-Taste, um fortzufahren.'},
         ],
     },
     "en": {
