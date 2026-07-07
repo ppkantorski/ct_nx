@@ -207,7 +207,7 @@ static CachedGlyph *get_glyph_for_face(FT_Face face, uint32_t cp, int px, FT_UIn
 // pick the first face that has a glyph for cp (game font, then each shared
 // font, then a last-resort notdef face), and return its cached/rendered glyph.
 //
-// Note: in-message <BTN_*> tags (e.g. "(A)") are now plain ASCII produced by
+// Note: in-message <BTN_*> tags (e.g. "[A]") are now plain ASCII produced by
 // the libchrono glyph patch, so they render through this normal path in
 // whatever face is already drawing the surrounding text -- no Private-Use
 // codepoints and no separate shared-font icon lookup is needed here anymore.
@@ -701,7 +701,7 @@ unsigned char *gfx_render_text_rgba(const char *text, int font_size,
   // glyph.
   int ref_above = 0, ref_below = 0;
   if (g_game_ok) {
-    static const char REF[] = "ABHTMW";
+    static const char REF[] = "A";
     line_ink_extents(REF, REF + sizeof(REF) - 1, rpx, &ref_above, &ref_below);
     if (ref_above <= 0) ref_above = (rpx * 7) / 10; // fallback if refs somehow blank
   }

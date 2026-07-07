@@ -727,7 +727,7 @@ static const PatchEntry g_glyph_patches[] = {
     "MsgText <BTN_*> tags: force controller glyph table (csel x20,x8,x9,ne -> mov x20,x8)"),
 
   // ---------------------------------------------------------------------
-  // <BTN_*> glyphs: bracketed letters -> plain "(A)"-style ASCII glyphs
+  // <BTN_*> glyphs: bracketed letters -> plain "[A]"-style ASCII glyphs
   //
   // The builder at 0x5fce6c assembles each glyph string inline in registers
   // (movz/movk) then stores it into every swap-variant slot of TWO parallel
@@ -738,8 +738,8 @@ static const PatchEntry g_glyph_patches[] = {
   // Originally each VALUE glyph was the 7-byte UTF-8 string
   //   U+3010 <letter> U+3011   ( e.g. e3 80 90 41 e3 80 91 = bracketed 'A' )
   // built as two overlapping 4-byte halves in a _lo/_hi register pair. We
-  // replace each with the plain 3-byte ASCII string "(<letter>)" (e.g.
-  // "(A)" = 28 41 29), so the button prompt renders as ordinary text in
+  // replace each with the plain 3-byte ASCII string "[<letter>]" (e.g.
+  // "[A]" = 5b 41 5d), so the button prompt renders as ordinary text in
   // whichever font is already drawing the surrounding dialogue -- no
   // Private-Use codepoints and no separate shared-font lookup required.
   //
@@ -749,59 +749,59 @@ static const PatchEntry g_glyph_patches[] = {
   // <BT, leaving 'N_R>'/'N_L>' after the icon. We therefore leave w20 at its
   // original 0x0e (keys stay length 7) and instead route every glyph-VALUE
   // size byte through w16 (set to 0x06 = length 3), which the L/R glyphs
-  // already used. Per glyph: set _lo = '28 <letter> 29 00', zero _hi (NUL
+  // already used. Per glyph: set _lo = '5b <letter> 5d 00', zero _hi (NUL
   // pad) -- the ASCII form is the same 3-byte length as the old PUA glyph,
   // so the size-byte plumbing below is unchanged.
   // ---------------------------------------------------------------------
-  // <BTN_A> glyph -> "(A)" (28 41 29)
-  P_RAW(0x5fce84, 0x52901c68, 0x52882508,
-    "<BTN_A> glyph lo: movz w8,#0x4128 (ASCII 28 41 = \"(A\")"),
-  P_RAW(0x5fceac, 0x72a83208, 0x72a00528,
-    "<BTN_A> glyph lo: movk w8,#0x0029,lsl16 (ASCII 29 00 = \")\\0\")"),
+  // <BTN_A> glyph -> "[A]" (5b 41 5d)
+  P_RAW(0x5fce84, 0x52901c68, 0x52882b68,
+    "<BTN_A> glyph lo: movz w8,#0x415b (ASCII 5b 41 = \"[A\")"),
+  P_RAW(0x5fceac, 0x72a83208, 0x72a00ba8,
+    "<BTN_A> glyph lo: movk w8,#0x005d,lsl16 (ASCII 5d 00 = \"]\\0\")"),
   P_RAW(0x5fce88, 0x529c682e, 0x5280000e,
     "<BTN_A> glyph hi: movz w14,#0 (NUL pad)"),
   P_RAW(0x5fceb0, 0x72b2300e, 0x72a0000e,
     "<BTN_A> glyph hi: movk w14,#0,lsl16"),
-  // <BTN_B> glyph -> "(B)" (28 42 29)
-  P_RAW(0x5fce8c, 0x52901c75, 0x52884515,
-    "<BTN_B> glyph lo: movz w21,#0x4228 (ASCII 28 42 = \"(B\")"),
-  P_RAW(0x5fceb4, 0x72a85215, 0x72a00535,
-    "<BTN_B> glyph lo: movk w21,#0x0029,lsl16 (ASCII 29 00 = \")\\0\")"),
+  // <BTN_B> glyph -> "[B]" (5b 42 5d)
+  P_RAW(0x5fce8c, 0x52901c75, 0x52884b75,
+    "<BTN_B> glyph lo: movz w21,#0x425b (ASCII 5b 42 = \"[B\")"),
+  P_RAW(0x5fceb4, 0x72a85215, 0x72a00bb5,
+    "<BTN_B> glyph lo: movk w21,#0x005d,lsl16 (ASCII 5d 00 = \"]\\0\")"),
   P_RAW(0x5fce90, 0x529c6856, 0x52800016,
     "<BTN_B> glyph hi: movz w22,#0 (NUL pad)"),
   P_RAW(0x5fceb8, 0x72b23016, 0x72a00016,
     "<BTN_B> glyph hi: movk w22,#0,lsl16"),
-  // <BTN_X> glyph -> "(X)" (28 58 29)
-  P_RAW(0x5fce94, 0x52901c6a, 0x528b050a,
-    "<BTN_X> glyph lo: movz w10,#0x5828 (ASCII 28 58 = \"(X\")"),
-  P_RAW(0x5fcebc, 0x72ab120a, 0x72a0052a,
-    "<BTN_X> glyph lo: movk w10,#0x0029,lsl16 (ASCII 29 00 = \")\\0\")"),
+  // <BTN_X> glyph -> "[X]" (5b 58 5d)
+  P_RAW(0x5fce94, 0x52901c6a, 0x528b0b6a,
+    "<BTN_X> glyph lo: movz w10,#0x585b (ASCII 5b 58 = \"[X\")"),
+  P_RAW(0x5fcebc, 0x72ab120a, 0x72a00baa,
+    "<BTN_X> glyph lo: movk w10,#0x005d,lsl16 (ASCII 5d 00 = \"]\\0\")"),
   P_RAW(0x5fce98, 0x529c6b0f, 0x5280000f,
     "<BTN_X> glyph hi: movz w15,#0 (NUL pad)"),
   P_RAW(0x5fcec0, 0x72b2300f, 0x72a0000f,
     "<BTN_X> glyph hi: movk w15,#0,lsl16"),
-  // <BTN_Y> glyph -> "(Y)" (28 59 29)
-  P_RAW(0x5fce9c, 0x52901c6b, 0x528b250b,
-    "<BTN_Y> glyph lo: movz w11,#0x5928 (ASCII 28 59 = \"(Y\")"),
-  P_RAW(0x5fcec4, 0x72ab320b, 0x72a0052b,
-    "<BTN_Y> glyph lo: movk w11,#0x0029,lsl16 (ASCII 29 00 = \")\\0\")"),
+  // <BTN_Y> glyph -> "[Y]" (5b 59 5d)
+  P_RAW(0x5fce9c, 0x52901c6b, 0x528b2b6b,
+    "<BTN_Y> glyph lo: movz w11,#0x595b (ASCII 5b 59 = \"[Y\")"),
+  P_RAW(0x5fcec4, 0x72ab320b, 0x72a00bab,
+    "<BTN_Y> glyph lo: movk w11,#0x005d,lsl16 (ASCII 5d 00 = \"]\\0\")"),
   P_RAW(0x5fcea0, 0x529c6b31, 0x52800011,
     "<BTN_Y> glyph hi: movz w17,#0 (NUL pad)"),
   P_RAW(0x5fcec8, 0x72b23011, 0x72a00011,
     "<BTN_Y> glyph hi: movk w17,#0,lsl16"),
-  // <BTN_R> glyph -> "(R)" (28 52 29)   |   <BTN_L> glyph -> "(L)" (28 4c 29)
-  P_RAW(0x5fce6c, 0xd2901c6c, 0xd28a450c,
-    "<BTN_R> glyph: movz x12,#0x5228 (ASCII 28 52 = \"(R\")"),
-  P_RAW(0x5fce7c, 0xf2aa520c, 0xf2a0052c,
-    "<BTN_R> glyph: movk x12,#0x0029,lsl16 (ASCII 29 00 = \")\\0\")"),
+  // <BTN_R> glyph -> "[R]" (5b 52 5d)   |   <BTN_L> glyph -> "[L]" (5b 4c 5d)
+  P_RAW(0x5fce6c, 0xd2901c6c, 0xd28a4b6c,
+    "<BTN_R> glyph: movz x12,#0x525b (ASCII 5b 52 = \"[R\")"),
+  P_RAW(0x5fce7c, 0xf2aa520c, 0xf2a00bac,
+    "<BTN_R> glyph: movk x12,#0x005d,lsl16 (ASCII 5d 00 = \"]\\0\")"),
   P_RAW(0x5fcea4, 0xf2dc684c, 0xf2c0000c,
     "<BTN_R> glyph: movk x12,#0,lsl32 (NUL pad)"),
   P_RAW(0x5fced0, 0xf2f2300c, 0xf2e0000c,
     "<BTN_R> glyph: movk x12,#0,lsl48 (NUL pad)"),
-  P_RAW(0x5fce70, 0xd2901c6d, 0xd289850d,
-    "<BTN_L> glyph: movz x13,#0x4c28 (ASCII 28 4c = \"(L\")"),
-  P_RAW(0x5fce80, 0xf2a9920d, 0xf2a0052d,
-    "<BTN_L> glyph: movk x13,#0x0029,lsl16 (ASCII 29 00 = \")\\0\")"),
+  P_RAW(0x5fce70, 0xd2901c6d, 0xd2898b6d,
+    "<BTN_L> glyph: movz x13,#0x4c5b (ASCII 5b 4c = \"[L\")"),
+  P_RAW(0x5fce80, 0xf2a9920d, 0xf2a00bad,
+    "<BTN_L> glyph: movk x13,#0x005d,lsl16 (ASCII 5d 00 = \"]\\0\")"),
   P_RAW(0x5fcea8, 0xf2dc684d, 0xf2c0000d,
     "<BTN_L> glyph: movk x13,#0,lsl32 (NUL pad)"),
   P_RAW(0x5fced4, 0xf2f2300d, 0xf2e0000d,
