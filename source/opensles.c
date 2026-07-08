@@ -20,6 +20,10 @@
 #include "opensles.h"
 #include "util.h"
 
+#ifdef __SWITCH__
+#include <switch.h>   /* svcSetThreadCoreMask, CUR_THREAD_HANDLE */
+#endif
+
 // --- OpenSL ES constants ----------------------------------------------------
 
 #define SL_RESULT_SUCCESS              0
@@ -312,6 +316,17 @@ static void mix_movie(int32_t *acc, int frames) {
 
 static void SDLCALL audio_callback(void *ud, Uint8 *stream, int len) {
   (void)ud;
+#ifdef __SWITCH__
+  /* This callback runs on SDL's internal audio thread. Pin it to core 2 once,
+   * off core 0 where the single-threaded engine + GL submission run, so mixing
+   * doesn't steal time from the frame's critical path. Cores 0-2 are granted to
+   * application processes; core 2 is otherwise idle during gameplay. */
+  static int s_audio_pinned = 0;
+  if (!s_audio_pinned) {
+    svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, 1u << 2);
+    s_audio_pinned = 1;
+  }
+#endif
 
   const int frames = len / 4; // S16 stereo
   static int32_t acc[8192 * 2];

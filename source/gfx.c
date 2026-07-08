@@ -701,7 +701,7 @@ unsigned char *gfx_render_text_rgba(const char *text, int font_size,
   // glyph.
   int ref_above = 0, ref_below = 0;
   if (g_game_ok) {
-    static const char REF[] = "A";
+    static const char REF[] = "ABHTMW";
     line_ink_extents(REF, REF + sizeof(REF) - 1, rpx, &ref_above, &ref_below);
     if (ref_above <= 0) ref_above = (rpx * 7) / 10; // fallback if refs somehow blank
   }
